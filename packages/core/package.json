@@ -15,5 +15,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "build": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "fast-check": "^4.9.0"
   }
 }
