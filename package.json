@@ -1,0 +1,17 @@
+{
+  "name": "tenjin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "test": "pnpm --recursive --if-present test",
+    "typecheck": "pnpm --recursive --if-present typecheck",
+    "build": "pnpm --recursive --if-present build",
+    "lint": "pnpm --recursive --if-present lint"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}
