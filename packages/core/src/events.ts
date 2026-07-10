@@ -293,7 +293,7 @@ function validateCaptureCreated(
   }
 
   if (
-    payload.captureDurationMs !== undefined &&
+    Object.hasOwn(payload, "captureDurationMs") &&
     (!Number.isSafeInteger(payload.captureDurationMs) ||
       (payload.captureDurationMs as number) < 0)
   ) {
@@ -321,7 +321,8 @@ function validateCaptureDiscarded(
   const payload = getPayload(candidate, errors);
 
   if (
-    payload?.reason !== undefined &&
+    payload !== undefined &&
+    Object.hasOwn(payload, "reason") &&
     payload.reason !== "undo" &&
     payload.reason !== "discarded"
   ) {

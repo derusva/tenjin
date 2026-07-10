@@ -315,4 +315,27 @@ describe("validateEvent", () => {
   ])("rejects invalid optional envelope fields %j", (candidate, field) => {
     expectInvalidField(candidate, field);
   });
+
+  it("rejects an explicitly undefined captureDurationMs", () => {
+    expectInvalidField(
+      {
+        ...captureCreatedEvent,
+        payload: {
+          captureType: "lookup",
+          captureDurationMs: undefined,
+        },
+      },
+      "payload.captureDurationMs",
+    );
+  });
+
+  it("rejects an explicitly undefined capture discard reason", () => {
+    expectInvalidField(
+      {
+        ...supportedEvents[1],
+        payload: { reason: undefined },
+      },
+      "payload.reason",
+    );
+  });
 });
