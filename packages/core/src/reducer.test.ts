@@ -77,9 +77,10 @@ function lookupObserved(
   itemId: string,
   captureId: string,
   seq = 3,
+  occurredAt = BASE_TIME,
 ): LookupObservedEvent {
   return {
-    ...envelope(`event-${seq}`, seq),
+    ...envelope(`event-${seq}`, seq, occurredAt),
     kind: "lookup_observed",
     itemId,
     captureId,
@@ -213,6 +214,36 @@ describe("deriveLedger capture observations", () => {
     ] satisfies readonly Event[]);
 
     expectActivation(events, "item-p", "P");
+  });
+
+  it("preserves latest fail history when an observation resets the channel", () => {
+    const events = [
+      captureCreated("capture-history", "lookup"),
+      itemCreated("item-history", "capture-history", ["R"]),
+      verificationObserved(
+        "item-history",
+        "R",
+        "fail",
+        "2026-01-02T08:00:00.000Z",
+        3,
+      ),
+      lookupObserved(
+        "item-history",
+        "capture-history",
+        4,
+        "2026-01-03T08:00:00.000Z",
+      ),
+    ] satisfies readonly Event[];
+
+    expect(deriveLedger(events).itemById.get("item-history")?.channels.R).toEqual(
+      {
+        state: "unstable",
+        validPassDates: [],
+        lastVerifiedAt: "2026-01-02T08:00:00.000Z",
+        lastEvidenceAt: "2026-01-03T08:00:00.000Z",
+        atRiskSince: "2026-01-02T08:00:00.000Z",
+      },
+    );
   });
 });
 
@@ -418,6 +449,55 @@ describe("deriveLedger verification state", () => {
     ).toBe("stable");
   });
 
+  it("starts a fresh risk window when the first fail follows promotion", () => {
+    const events = [
+      captureCreated("capture-promoted-risk", "lookup"),
+      itemCreated("item-promoted-risk", "capture-promoted-risk", ["R"]),
+      verificationObserved(
+        "item-promoted-risk",
+        "R",
+        "fail",
+        "2026-01-02T08:00:00.000Z",
+        3,
+      ),
+      verificationObserved(
+        "item-promoted-risk",
+        "R",
+        "pass",
+        "2026-01-03T08:00:00.000Z",
+        4,
+      ),
+      verificationObserved(
+        "item-promoted-risk",
+        "R",
+        "pass",
+        "2026-01-06T08:00:00.000Z",
+        5,
+      ),
+      verificationObserved(
+        "item-promoted-risk",
+        "R",
+        "pass",
+        "2026-01-10T08:00:00.000Z",
+        6,
+      ),
+      verificationObserved(
+        "item-promoted-risk",
+        "R",
+        "fail",
+        "2026-01-15T08:00:00.000Z",
+        7,
+      ),
+    ] satisfies readonly Event[];
+
+    expect(
+      deriveLedger(events).itemById.get("item-promoted-risk")?.channels.R,
+    ).toMatchObject({
+      state: "stable",
+      atRiskSince: "2026-01-15T08:00:00.000Z",
+    });
+  });
+
   it("demotes stable after a second fail within the 30-day risk window", () => {
     const firstFail = verificationObserved(
       "item-risk",
@@ -564,6 +644,36 @@ describe("deriveLedger discarded captures", () => {
 });
 
 describe("deriveLedger deterministic event-set semantics", () => {
+  it("keeps lastOccurredAt at the maximum occurrence under HLC-later backfill", () => {
+    const backfilled = {
+      ...verificationObserved(
+        "item-recency",
+        "R",
+        "hesitant",
+        "2026-01-05T08:00:00.000Z",
+        4,
+        { recordedAt: "2026-01-11T08:00:00.000Z" },
+      ),
+      hlc: { wallTime: Date.parse("2026-01-11T08:00:00.000Z"), counter: 0 },
+    } satisfies VerificationObservedEvent;
+    const events = [
+      captureCreated("capture-recency", "lookup"),
+      itemCreated("item-recency", "capture-recency", ["R"]),
+      verificationObserved(
+        "item-recency",
+        "R",
+        "hesitant",
+        "2026-01-10T08:00:00.000Z",
+        3,
+      ),
+      backfilled,
+    ] satisfies readonly Event[];
+
+    expect(deriveLedger(events).itemById.get("item-recency")?.lastOccurredAt).toBe(
+      "2026-01-10T08:00:00.000Z",
+    );
+  });
+
   it("ignores observations and verifications for unknown itemIds", () => {
     const view = deriveLedger([
       lookupObserved("missing-item", "capture-missing", 1),

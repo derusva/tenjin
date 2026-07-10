@@ -99,6 +99,15 @@ const MINIMUM_PROMOTION_SPAN_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAXIMUM_BACKFILL_DELAY_MS = 24 * 60 * 60 * 1_000;
 const STABLE_FAILURE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
 
+function updateLastOccurredAt(
+  item: MutableItemView,
+  occurredAt: string,
+): void {
+  if (occurredAt > item.lastOccurredAt) {
+    item.lastOccurredAt = occurredAt;
+  }
+}
+
 function applyVerification(
   item: MutableItemView,
   event: Extract<Event, { kind: "verification_observed" }>,
@@ -107,7 +116,7 @@ function applyVerification(
   channel.lastVerifiedAt = event.occurredAt;
   channel.lastEvidenceAt = event.occurredAt;
   item.evidenceCount += 1;
-  item.lastOccurredAt = event.occurredAt;
+  updateLastOccurredAt(item, event.occurredAt);
 
   if (channel.state === "untracked" || event.payload.result === "hesitant") {
     return;
@@ -166,6 +175,7 @@ function applyVerification(
       MINIMUM_PROMOTION_SPAN_MS
   ) {
     channel.state = "stable";
+    delete channel.atRiskSince;
   }
 }
 
@@ -234,13 +244,12 @@ export function deriveLedger(events: readonly Event[]): LedgerView {
       continue;
     }
 
-    item.channels[channel] = {
-      state: "unstable",
-      validPassDates: [],
-      lastEvidenceAt: event.occurredAt,
-    };
+    const channelView = item.channels[channel];
+    channelView.state = "unstable";
+    channelView.validPassDates = [];
+    channelView.lastEvidenceAt = event.occurredAt;
     item.evidenceCount += 1;
-    item.lastOccurredAt = event.occurredAt;
+    updateLastOccurredAt(item, event.occurredAt);
   }
 
   const items: readonly ItemView[] = [...itemById.values()].sort((left, right) =>

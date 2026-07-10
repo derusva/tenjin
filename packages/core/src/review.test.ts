@@ -4,6 +4,7 @@ import type {
   Event,
   ItemCreatedEvent,
   LearningChannel,
+  LookupObservedEvent,
   VerificationObservedEvent,
 } from "./events.js";
 import { deriveLedger } from "./reducer.js";
@@ -61,6 +62,16 @@ function eventBuilder() {
     } satisfies VerificationObservedEvent);
   }
 
+  function lookup(itemId: string, occurredAt: string): void {
+    events.push({
+      ...envelope(occurredAt),
+      kind: "lookup_observed",
+      itemId,
+      captureId: `capture-lookup-${itemId}`,
+      payload: { channel: "R", result: "lookup" },
+    } satisfies LookupObservedEvent);
+  }
+
   function stable(itemId: string, dates: readonly string[]): void {
     item(itemId, ["R"]);
     for (const occurredAt of dates) {
@@ -68,7 +79,7 @@ function eventBuilder() {
     }
   }
 
-  return { events, item, verify, stable };
+  return { events, item, verify, lookup, stable };
 }
 
 function summary(items: ReturnType<typeof selectReviewItems>) {
@@ -80,6 +91,22 @@ function summary(items: ReturnType<typeof selectReviewItems>) {
 }
 
 describe("selectReviewItems", () => {
+  it("keeps a recent fail in Tier 1 after a later lookup reset", () => {
+    const builder = eventBuilder();
+    builder.item("item-history", ["R"]);
+    builder.verify(
+      "item-history",
+      "R",
+      "fail",
+      "2026-03-20T12:00:00.000Z",
+    );
+    builder.lookup("item-history", "2026-03-21T12:00:00.000Z");
+
+    expect(summary(selectReviewItems(deriveLedger(builder.events), 1))).toEqual([
+      { itemId: "item-history", channel: "R", reason: "recent-failure" },
+    ]);
+  });
+
   it("orders fixed-budget tiers and limits stable checking to one channel", () => {
     const builder = eventBuilder();
     builder.item("recent-boundary", ["R"]);
