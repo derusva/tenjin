@@ -654,6 +654,56 @@ describe("openLedgerRepository", () => {
     });
   });
 
+  it("retains shared context until its last active capture is discarded", async () => {
+    const repository = await openTestRepository("append-discard-shared-context");
+    const newerCapture = {
+      ...captureCreatedEvent,
+      eventId: "event-capture-2",
+      seq: 4,
+      hlc: {
+        wallTime: 1_783_702_860_000,
+        counter: 0,
+      },
+      occurredAt: "2026-07-11T00:21:00.000Z",
+      recordedAt: "2026-07-11T00:21:01.000Z",
+      captureId: "capture-2",
+    } as const satisfies CaptureCreatedEvent;
+    const newerDiscard = {
+      ...captureDiscardedEvent,
+      eventId: "event-discard-2",
+      seq: 5,
+      hlc: {
+        wallTime: 1_783_702_920_000,
+        counter: 0,
+      },
+      occurredAt: "2026-07-11T00:22:00.000Z",
+      recordedAt: "2026-07-11T00:22:01.000Z",
+      captureId: "capture-2",
+    } as const satisfies CaptureDiscardedEvent;
+
+    await repository.appendCapture([captureCreatedEvent], context);
+    await repository.appendCapture([newerCapture], context);
+
+    await repository.appendDiscard(newerDiscard, context.hash);
+
+    expect(await repository.readSnapshot()).toEqual({
+      events: [captureCreatedEvent, newerCapture, newerDiscard],
+      contexts: [context],
+    });
+
+    await repository.appendDiscard(captureDiscardedEvent, context.hash);
+
+    expect(await repository.readSnapshot()).toEqual({
+      events: [
+        captureCreatedEvent,
+        newerCapture,
+        captureDiscardedEvent,
+        newerDiscard,
+      ],
+      contexts: [],
+    });
+  });
+
   it("preserves the context when a discard event write fails", async () => {
     const repository = await openTestRepository("append-discard-rollback");
     const uncloneableDiscard = {

@@ -1,6 +1,10 @@
 import "fake-indexeddb/auto";
 
-import { openLedgerRepository, type LedgerRepository } from "@tenjin/storage-indexeddb";
+import {
+  openLedgerRepository,
+  type LedgerRepository,
+  type LedgerSnapshot,
+} from "@tenjin/storage-indexeddb";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +16,14 @@ import {
 } from "./features/ledger/ledgerRuntime.js";
 
 let databaseSequence = 0;
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
 
 function hexadecimalDigest(text: string): string {
   return [...new TextEncoder().encode(text)]
@@ -89,6 +101,79 @@ async function saveLookupWithFakeTimers(
 }
 
 describe("App", () => {
+  it("keeps review disabled until the initial snapshot is ready", async () => {
+    const harness = await createHarness();
+    const seededCapture = await harness.runtime.createCapture({
+      type: "lookup",
+      original: "loaded item",
+    });
+    await harness.repository.appendCapture(
+      seededCapture.events,
+      seededCapture.context,
+    );
+    const initialSnapshot = await harness.repository.readSnapshot();
+    const initialRead = createDeferred<LedgerSnapshot>();
+    let delayNextRead = true;
+    const delayedRepository: LedgerRepository = {
+      appendCapture(events, context) {
+        return harness.repository.appendCapture(events, context);
+      },
+      appendEvents(events) {
+        return harness.repository.appendEvents(events);
+      },
+      appendDiscard(event, contextHash) {
+        return harness.repository.appendDiscard(event, contextHash);
+      },
+      readSnapshot() {
+        if (delayNextRead) {
+          delayNextRead = false;
+          return initialRead.promise;
+        }
+        return harness.repository.readSnapshot();
+      },
+      close() {
+        harness.repository.close();
+      },
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={delayedRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "正在加载本地记录…",
+      );
+      const navigation = screen.getByRole("navigation", {
+        name: "主要导航",
+      });
+      const review = within(navigation).getByRole("button", { name: "复习" });
+      expect(review).toBeDisabled();
+
+      await user.click(review);
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "正在加载本地记录…",
+      );
+
+      await act(async () => {
+        initialRead.resolve(initialSnapshot);
+        await initialRead.promise;
+      });
+
+      expect(
+        await screen.findByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+      expect(review).toBeEnabled();
+      await user.click(review);
+      expect(await screen.findByText("1 / 1")).toBeInTheDocument();
+      expect(screen.getByText("loaded item")).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
   it("persists the complete capture, recent, review, search, undo, and data flow", async () => {
     const harness = await createHarness();
     const user = userEvent.setup();

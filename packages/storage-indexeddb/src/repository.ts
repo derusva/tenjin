@@ -572,7 +572,21 @@ class IndexedDBLedgerRepository implements LedgerRepository {
           `eventId ${storageEvent.eventId} already exists with different content`,
         );
       }
-      await transaction.objectStore("contexts").delete(contextHash);
+      const storedEvents = await eventStore.getAll();
+      const discardedCaptureIds = new Set(
+        storedEvents
+          .filter((stored) => stored.kind === "capture_discarded")
+          .map((discard) => discard.captureId),
+      );
+      const hasActiveContextReference = storedEvents.some(
+        (stored) =>
+          stored.kind === "capture_created" &&
+          stored.contextHash === contextHash &&
+          !discardedCaptureIds.has(stored.captureId),
+      );
+      if (!hasActiveContextReference) {
+        await transaction.objectStore("contexts").delete(contextHash);
+      }
       await transaction.done;
     } catch (error) {
       try {

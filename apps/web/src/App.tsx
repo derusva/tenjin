@@ -191,6 +191,7 @@ export function App({ repository, runtime }: AppProps) {
           <button
             key={item.view}
             type="button"
+            disabled={item.view === "review" && ledger.status !== "ready"}
             aria-current={currentView === item.view ? "page" : undefined}
             onClick={() => openView(item.view)}
           >
