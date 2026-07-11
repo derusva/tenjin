@@ -8,6 +8,7 @@ export interface ChannelView {
   readonly lastVerifiedAt?: string;
   readonly lastEvidenceAt?: string;
   readonly atRiskSince?: string;
+  readonly lastFailureAt?: string;
 }
 
 export interface ItemView {
@@ -31,6 +32,7 @@ interface MutableChannelView {
   lastVerifiedAt?: string;
   lastEvidenceAt?: string;
   atRiskSince?: string;
+  lastFailureAt?: string;
 }
 
 interface MutableItemView {
@@ -58,6 +60,13 @@ function compareEvents(left: Event, right: Event): number {
     compareStrings(left.deviceId, right.deviceId) ||
     compareNumbers(left.seq, right.seq) ||
     compareStrings(left.eventId, right.eventId)
+  );
+}
+
+function compareLearningEvents(left: Event, right: Event): number {
+  return (
+    compareStrings(left.occurredAt, right.occurredAt) ||
+    compareEvents(left, right)
   );
 }
 
@@ -123,6 +132,7 @@ function applyVerification(
   }
 
   if (event.payload.result === "fail") {
+    channel.lastFailureAt = event.occurredAt;
     if (channel.state === "stable") {
       const previousFailure = channel.atRiskSince;
       if (previousFailure !== undefined) {
@@ -153,10 +163,6 @@ function applyVerification(
     return;
   }
 
-  if (channel.state === "stable") {
-    delete channel.atRiskSince;
-  }
-
   const passDate = event.occurredAt.slice(0, 10);
   if (!channel.validPassDates.includes(passDate)) {
     channel.validPassDates = [...channel.validPassDates, passDate].sort(
@@ -174,8 +180,11 @@ function applyVerification(
       Date.parse(`${firstDate}T00:00:00.000Z`) >=
       MINIMUM_PROMOTION_SPAN_MS
   ) {
+    const promoted = channel.state !== "stable";
     channel.state = "stable";
-    delete channel.atRiskSince;
+    if (promoted) {
+      delete channel.atRiskSince;
+    }
   }
 }
 
@@ -197,8 +206,17 @@ function isDiscardableCaptureEvent(
 export function deriveLedger(events: readonly Event[]): LedgerView {
   const itemById = new Map<string, MutableItemView>();
   const seenEventIds = new Set<string>();
+  const canonicalEvents: Event[] = [];
+
+  for (const event of [...events].sort(compareEvents)) {
+    if (!seenEventIds.has(event.eventId)) {
+      seenEventIds.add(event.eventId);
+      canonicalEvents.push(event);
+    }
+  }
+
   const discardedCaptureIds = new Set(
-    events
+    canonicalEvents
       .filter(
         (event): event is Extract<Event, { kind: "capture_discarded" }> =>
           event.kind === "capture_discarded",
@@ -206,23 +224,25 @@ export function deriveLedger(events: readonly Event[]): LedgerView {
       .map((event) => event.captureId),
   );
 
-  for (const event of [...events].sort(compareEvents)) {
-    if (seenEventIds.has(event.eventId)) {
+  for (const event of canonicalEvents) {
+    if (event.kind !== "item_created") {
       continue;
     }
-    seenEventIds.add(event.eventId);
 
+    if (discardedCaptureIds.has(event.captureId)) {
+      continue;
+    }
+
+    if (!itemById.has(event.itemId)) {
+      itemById.set(event.itemId, makeItem(event));
+    }
+  }
+
+  for (const event of [...canonicalEvents].sort(compareLearningEvents)) {
     if (
       isDiscardableCaptureEvent(event) &&
       discardedCaptureIds.has(event.captureId)
     ) {
-      continue;
-    }
-
-    if (event.kind === "item_created") {
-      if (!itemById.has(event.itemId)) {
-        itemById.set(event.itemId, makeItem(event));
-      }
       continue;
     }
 

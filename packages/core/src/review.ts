@@ -63,19 +63,14 @@ function newestOccurredAt(view: LedgerView): string | undefined {
 }
 
 function isRecentFailure(
-  lastVerifiedAt: string | undefined,
-  atRiskSince: string | undefined,
+  lastFailureAt: string | undefined,
   newest: string | undefined,
 ): boolean {
-  if (
-    lastVerifiedAt === undefined ||
-    atRiskSince !== lastVerifiedAt ||
-    newest === undefined
-  ) {
+  if (lastFailureAt === undefined || newest === undefined) {
     return false;
   }
 
-  const age = Date.parse(newest) - Date.parse(lastVerifiedAt);
+  const age = Date.parse(newest) - Date.parse(lastFailureAt);
   return age >= 0 && age <= RECENT_FAILURE_WINDOW_MS;
 }
 
@@ -101,13 +96,7 @@ export function selectReviewItems(
 
       let reason: EvidenceReason;
       let tier: Candidate[];
-      if (
-        isRecentFailure(
-          channelView.lastVerifiedAt,
-          channelView.atRiskSince,
-          newest,
-        )
-      ) {
+      if (isRecentFailure(channelView.lastFailureAt, newest)) {
         reason = "recent-failure";
         tier = recentFailures;
       } else if (channelView.state === "unstable") {

@@ -242,6 +242,7 @@ describe("deriveLedger capture observations", () => {
         lastVerifiedAt: "2026-01-02T08:00:00.000Z",
         lastEvidenceAt: "2026-01-03T08:00:00.000Z",
         atRiskSince: "2026-01-02T08:00:00.000Z",
+        lastFailureAt: "2026-01-02T08:00:00.000Z",
       },
     );
   });
@@ -542,10 +543,62 @@ describe("deriveLedger verification state", () => {
       deriveLedger([...stableEvents, firstFail, hesitant, secondFail]).itemById.get(
         "item-risk",
       )?.channels.R,
-    ).toMatchObject({ state: "unstable", validPassDates: [] });
+    ).toMatchObject({
+      state: "unstable",
+      validPassDates: [],
+      lastFailureAt: "2026-01-20T08:00:00.000Z",
+    });
   });
 
-  it("restarts an expired risk window and clears it only on a qualified pass", () => {
+  it("keeps the first stable failure window across a pass", () => {
+    const stableEvents = stableRecognitionEvents(
+      "item-pass-between-fails",
+      "capture-pass-between-fails",
+    );
+    const firstFail = verificationObserved(
+      "item-pass-between-fails",
+      "R",
+      "fail",
+      "2026-01-10T08:00:00.000Z",
+      6,
+    );
+    const pass = verificationObserved(
+      "item-pass-between-fails",
+      "R",
+      "pass",
+      "2026-01-15T08:00:00.000Z",
+      7,
+    );
+    const secondFail = verificationObserved(
+      "item-pass-between-fails",
+      "R",
+      "fail",
+      "2026-01-20T08:00:00.000Z",
+      8,
+    );
+
+    const afterPass = deriveLedger([...stableEvents, firstFail, pass]).itemById.get(
+      "item-pass-between-fails",
+    )?.channels.R;
+    expect(afterPass).toMatchObject({
+      state: "stable",
+      atRiskSince: "2026-01-10T08:00:00.000Z",
+      lastFailureAt: "2026-01-10T08:00:00.000Z",
+      lastVerifiedAt: "2026-01-15T08:00:00.000Z",
+    });
+
+    expect(
+      deriveLedger([...stableEvents, firstFail, pass, secondFail]).itemById.get(
+        "item-pass-between-fails",
+      )?.channels.R,
+    ).toMatchObject({
+      state: "unstable",
+      validPassDates: [],
+      lastFailureAt: "2026-01-20T08:00:00.000Z",
+    });
+  });
+
+  it("restarts an expired risk window and retains it across later passes", () => {
     const stableEvents = stableRecognitionEvents(
       "item-recovery",
       "capture-recovery",
@@ -599,7 +652,8 @@ describe("deriveLedger verification state", () => {
       qualifiedPass,
     ]).itemById.get("item-recovery")?.channels.R;
     expect(recovered?.state).toBe("stable");
-    expect(recovered?.atRiskSince).toBeUndefined();
+    expect(recovered?.atRiskSince).toBe("2026-02-10T08:00:00.000Z");
+    expect(recovered?.lastFailureAt).toBe("2026-02-10T08:00:00.000Z");
   });
 });
 
@@ -644,6 +698,128 @@ describe("deriveLedger discarded captures", () => {
 });
 
 describe("deriveLedger deterministic event-set semantics", () => {
+  it("resolves item identity before folding HLC-earlier learning evidence", () => {
+    const item = {
+      ...itemCreated("item-identity-first", "capture-identity-first", ["R"]),
+      hlc: {
+        wallTime: Date.parse("2026-01-10T08:00:00.000Z"),
+        counter: 0,
+      },
+    } satisfies ItemCreatedEvent;
+    const verification = verificationObserved(
+      "item-identity-first",
+      "R",
+      "hesitant",
+      "2026-01-02T08:00:00.000Z",
+      3,
+    );
+
+    expect(
+      deriveLedger([
+        captureCreated("capture-identity-first", "lookup"),
+        item,
+        verification,
+      ]).itemById.get("item-identity-first"),
+    ).toMatchObject({
+      evidenceCount: 1,
+      channels: {
+        R: {
+          lastVerifiedAt: "2026-01-02T08:00:00.000Z",
+          lastEvidenceAt: "2026-01-02T08:00:00.000Z",
+        },
+      },
+    });
+  });
+
+  it("deduplicates canonical event identity before resolving discards", () => {
+    const canonicalCapture = {
+      ...captureCreated("capture-deduplicated", "lookup"),
+      eventId: "duplicate-event-id",
+      hlc: { wallTime: 1, counter: 0 },
+    } satisfies CaptureCreatedEvent;
+    const shadowDiscard = {
+      ...captureDiscarded("capture-deduplicated", 4),
+      eventId: "duplicate-event-id",
+      hlc: { wallTime: 2, counter: 0 },
+    } satisfies CaptureDiscardedEvent;
+
+    expect(
+      deriveLedger([
+        shadowDiscard,
+        itemCreated("item-deduplicated", "capture-deduplicated", ["R"], 2),
+        canonicalCapture,
+      ]).items.map((item) => item.itemId),
+    ).toEqual(["item-deduplicated"]);
+  });
+
+  it("folds backfilled learning evidence by occurredAt without recency regression", () => {
+    const lateRecordedFail = {
+      ...verificationObserved(
+        "item-backfill-order",
+        "R",
+        "fail",
+        "2026-01-03T08:00:00.000Z",
+        6,
+        { recordedAt: "2026-01-10T08:00:00.000Z" },
+      ),
+      hlc: {
+        wallTime: Date.parse("2026-01-10T08:00:00.000Z"),
+        counter: 0,
+      },
+    } satisfies VerificationObservedEvent;
+    const eventSet = [
+      captureCreated("capture-backfill-order", "lookup"),
+      itemCreated("item-backfill-order", "capture-backfill-order", ["R"]),
+      verificationObserved(
+        "item-backfill-order",
+        "R",
+        "pass",
+        "2026-01-01T08:00:00.000Z",
+        3,
+      ),
+      verificationObserved(
+        "item-backfill-order",
+        "R",
+        "pass",
+        "2026-01-05T08:00:00.000Z",
+        4,
+      ),
+      verificationObserved(
+        "item-backfill-order",
+        "R",
+        "pass",
+        "2026-01-09T08:00:00.000Z",
+        5,
+      ),
+      lateRecordedFail,
+    ] satisfies readonly Event[];
+    const expectedChannel = {
+      state: "unstable",
+      validPassDates: ["2026-01-05", "2026-01-09"],
+      lastVerifiedAt: "2026-01-09T08:00:00.000Z",
+      lastEvidenceAt: "2026-01-09T08:00:00.000Z",
+      atRiskSince: "2026-01-03T08:00:00.000Z",
+      lastFailureAt: "2026-01-03T08:00:00.000Z",
+    };
+
+    fc.assert(
+      fc.property(
+        fc.shuffledSubarray(eventSet, {
+          minLength: eventSet.length,
+          maxLength: eventSet.length,
+        }),
+        (permutation) => {
+          const item = deriveLedger(permutation).itemById.get(
+            "item-backfill-order",
+          );
+          expect(item?.channels.R).toEqual(expectedChannel);
+          expect(item?.lastOccurredAt).toBe("2026-01-09T08:00:00.000Z");
+        },
+      ),
+      { numRuns: 100 },
+    );
+  });
+
   it("keeps lastOccurredAt at the maximum occurrence under HLC-later backfill", () => {
     const backfilled = {
       ...verificationObserved(

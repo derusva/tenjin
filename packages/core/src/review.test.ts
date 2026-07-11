@@ -91,6 +91,39 @@ function summary(items: ReturnType<typeof selectReviewItems>) {
 }
 
 describe("selectReviewItems", () => {
+  it("keeps a recent fail in Tier 1 after a hesitant verification", () => {
+    const builder = eventBuilder();
+    builder.item("item-fail-then-hesitant", ["R"]);
+    builder.verify(
+      "item-fail-then-hesitant",
+      "R",
+      "fail",
+      "2026-03-20T12:00:00.000Z",
+    );
+    builder.verify(
+      "item-fail-then-hesitant",
+      "R",
+      "hesitant",
+      "2026-03-21T12:00:00.000Z",
+    );
+
+    const view = deriveLedger(builder.events);
+
+    expect(
+      view.itemById.get("item-fail-then-hesitant")?.channels.R,
+    ).toMatchObject({
+      lastFailureAt: "2026-03-20T12:00:00.000Z",
+      lastVerifiedAt: "2026-03-21T12:00:00.000Z",
+    });
+    expect(summary(selectReviewItems(view, 1))).toEqual([
+      {
+        itemId: "item-fail-then-hesitant",
+        channel: "R",
+        reason: "recent-failure",
+      },
+    ]);
+  });
+
   it("keeps a recent fail in Tier 1 after a later lookup reset", () => {
     const builder = eventBuilder();
     builder.item("item-history", ["R"]);
