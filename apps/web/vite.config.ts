@@ -2,7 +2,10 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import { defineConfig } from "vitest/config";
 
+const PAGES_BASE = "/tenjin/";
+
 export default defineConfig({
+  base: PAGES_BASE,
   plugins: [
     react(),
     VitePWA({
@@ -24,7 +27,8 @@ export default defineConfig({
         lang: "zh-Hans",
         description: "离线优先的个人日语学习账本",
         display: "standalone",
-        start_url: "/",
+        scope: PAGES_BASE,
+        start_url: PAGES_BASE,
         background_color: "#F3EFE6",
         theme_color: "#123F31",
         icons: [
