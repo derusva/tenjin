@@ -1,0 +1,31 @@
+{
+  "name": "@tenjin/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "pretest": "pnpm --filter @tenjin/storage-indexeddb build",
+    "test": "vitest run",
+    "pretypecheck": "pnpm --filter @tenjin/storage-indexeddb build",
+    "typecheck": "tsc --noEmit",
+    "prebuild": "pnpm --filter @tenjin/storage-indexeddb build",
+    "build": "tsc --noEmit && vite build"
+  },
+  "dependencies": {
+    "@tenjin/core": "workspace:*",
+    "@tenjin/storage-indexeddb": "workspace:*",
+    "lucide-react": "^1.24.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^26.1.0",
+    "vite": "^7.3.6"
+  }
+}
