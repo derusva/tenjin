@@ -1,0 +1,26 @@
+{
+  "name": "@tenjin/storage-indexeddb",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "@tenjin/core": "workspace:*",
+    "idb": "^8.0.3"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.4"
+  }
+}
