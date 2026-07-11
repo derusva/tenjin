@@ -97,16 +97,16 @@ svg {
   min-height: 100dvh;
   padding:
     max(28px, env(safe-area-inset-top))
-    18px
+    calc(18px + env(safe-area-inset-right))
     calc(112px + env(safe-area-inset-bottom))
-    36px;
+    calc(36px + env(safe-area-inset-left));
 }
 
 .app-main::before {
   position: absolute;
   top: max(30px, env(safe-area-inset-top));
   bottom: 0;
-  left: 23px;
+  left: calc(23px + env(safe-area-inset-left));
   width: 1px;
   background: var(--vermilion);
   content: "";
@@ -346,6 +346,26 @@ svg {
   min-width: 0;
 }
 
+.recent-trail {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.recent-channel {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 1px solid var(--forest);
+  border-radius: 50%;
+  color: var(--forest);
+  font-family: var(--ui-font);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
 .recent-row h3 {
   overflow: hidden;
   margin: 0;
@@ -408,6 +428,7 @@ svg {
 
 .review-item > h1 {
   margin: 0;
+  overflow-wrap: anywhere;
   font-family: var(--heading-font);
   font-size: clamp(2.7rem, 12vw, 4rem);
   font-weight: 500;
@@ -561,6 +582,7 @@ svg {
 
 .evidence-list h2 {
   margin: 0 0 12px;
+  overflow-wrap: anywhere;
   font-family: var(--heading-font);
   font-size: 1.65rem;
   font-weight: 500;
@@ -568,6 +590,7 @@ svg {
 
 .evidence-list p {
   margin: 7px 0 0;
+  overflow-wrap: anywhere;
   color: var(--muted-ink);
   font-size: 0.82rem;
 }
@@ -609,7 +632,11 @@ svg {
 .undo-toast {
   position: fixed;
   z-index: 4;
-  right: max(16px, calc((100vw - 760px) / 2 + 16px));
+  right: max(
+    16px,
+    env(safe-area-inset-right),
+    calc((100vw - 760px) / 2 + 16px)
+  );
   bottom: calc(88px + env(safe-area-inset-bottom));
   display: flex;
   min-width: 190px;
@@ -633,6 +660,11 @@ svg {
   color: var(--paper);
 }
 
+.undo-toast button:focus-visible {
+  outline-color: var(--paper);
+  box-shadow: 0 0 0 calc(var(--focus-width) + 2px) var(--ink);
+}
+
 .bottom-nav {
   position: fixed;
   z-index: 3;
@@ -642,7 +674,9 @@ svg {
   width: min(100%, 760px);
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid var(--hairline);
+  padding-right: env(safe-area-inset-right);
   padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
   transform: translateX(-50%);
   background-color: rgb(243 239 230 / 96%);
 }
@@ -711,23 +745,28 @@ svg {
 
   .app-main {
     min-height: calc(100dvh - 48px);
-    padding-right: 40px;
-    padding-left: 64px;
+    padding-right: calc(40px + env(safe-area-inset-right));
+    padding-left: calc(64px + env(safe-area-inset-left));
   }
 
   .app-main::before {
-    left: 34px;
+    left: calc(34px + env(safe-area-inset-left));
+  }
+
+  .bottom-nav {
+    bottom: 24px;
+    width: min(calc(100% - 2px), 758px);
   }
 }
 
 @media (max-width: 359px) {
   .app-main {
-    padding-right: 12px;
-    padding-left: 32px;
+    padding-right: calc(12px + env(safe-area-inset-right));
+    padding-left: calc(32px + env(safe-area-inset-left));
   }
 
   .app-main::before {
-    left: 20px;
+    left: calc(20px + env(safe-area-inset-left));
   }
 
   .capture-type,

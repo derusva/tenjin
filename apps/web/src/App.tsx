@@ -1,4 +1,8 @@
-import type { ReviewItem } from "@tenjin/core";
+import type {
+  CaptureCreatedEvent,
+  LearningChannel,
+  ReviewItem,
+} from "@tenjin/core";
 import type { LedgerRepository } from "@tenjin/storage-indexeddb";
 import { useEffect, useRef, useState } from "react";
 
@@ -42,6 +46,17 @@ const NAVIGATION: readonly {
 
 const UNDO_WINDOW_MS = 8_000;
 
+const CAPTURE_CHANNEL: Readonly<
+  Record<
+    CaptureCreatedEvent["payload"]["captureType"],
+    LearningChannel
+  >
+> = {
+  lookup: "R",
+  listening_miss: "L",
+  production_correction: "P",
+};
+
 const STORAGE_PERSISTENCE_COPY: Readonly<
   Record<StoragePersistenceStatus, string>
 > = {
@@ -65,6 +80,15 @@ export function App({
     undefined,
   );
   const mounted = useRef(false);
+  const recentChannels = new Map<string, LearningChannel>();
+  for (const event of ledger.snapshot.events) {
+    if (event.kind === "capture_created") {
+      recentChannels.set(
+        event.captureId,
+        CAPTURE_CHANNEL[event.payload.captureType],
+      );
+    }
+  }
 
   useEffect(() => {
     mounted.current = true;
@@ -195,22 +219,37 @@ export function App({
             <p className="empty-state">还没有记录</p>
           ) : (
             <ul className="recent-list">
-              {ledger.recentEntries.map((entry) => (
-                <li key={entry.captureId}>
-                  <article className="recent-row">
-                    <div className="recent-copy">
-                      <h3>
-                        {entry.display ??
-                          entry.context.corrected ??
-                          entry.context.original}
-                      </h3>
-                      <p>{entry.context.original}</p>
-                      <time dateTime={entry.occurredAt}>{entry.occurredAt}</time>
-                    </div>
-                    <ChevronRightIcon aria-hidden="true" size={22} />
-                  </article>
-                </li>
-              ))}
+              {ledger.recentEntries.map((entry) => {
+                const channel = recentChannels.get(entry.captureId);
+                return (
+                  <li key={entry.captureId}>
+                    <article className="recent-row">
+                      <div className="recent-copy">
+                        <h3>
+                          {entry.display ??
+                            entry.context.corrected ??
+                            entry.context.original}
+                        </h3>
+                        <p>{entry.context.original}</p>
+                        <time dateTime={entry.occurredAt}>
+                          {entry.occurredAt}
+                        </time>
+                      </div>
+                      <div className="recent-trail">
+                        {channel === undefined ? null : (
+                          <span
+                            className="recent-channel"
+                            aria-label={`${channel} 通道`}
+                          >
+                            {channel}
+                          </span>
+                        )}
+                        <ChevronRightIcon aria-hidden="true" size={22} />
+                      </div>
+                    </article>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </section>

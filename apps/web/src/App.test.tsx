@@ -366,6 +366,83 @@ describe("App", () => {
     }
   });
 
+  it("labels recent lookup, listening, and production captures with their learning channels", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={harness.repository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+
+      await saveLookup(user, "recognition");
+
+      await user.click(screen.getByRole("radio", { name: "没听出" }));
+      await user.type(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        "listening",
+      );
+      await user.click(screen.getByRole("button", { name: "记下来" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        ).toHaveValue(""),
+      );
+
+      await user.click(screen.getByRole("radio", { name: "表达纠正" }));
+      await user.type(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        "production original",
+      );
+      await user.type(
+        screen.getByRole("textbox", { name: "纠正后的表达" }),
+        "production corrected",
+      );
+      await user.click(screen.getByRole("button", { name: "记下来" }));
+
+      const recent = await screen.findByRole("region", { name: "最近记录" });
+      const entries = within(recent).getAllByRole("listitem");
+      expect(
+        within(
+          entries.find(
+            (entry) =>
+              within(entry).queryByRole("heading", {
+                level: 3,
+                name: "recognition",
+              }) !== null,
+          )!,
+        ).getByLabelText("R 通道"),
+      ).toHaveTextContent("R");
+      expect(
+        within(
+          entries.find(
+            (entry) =>
+              within(entry).queryByRole("heading", {
+                level: 3,
+                name: "listening",
+              }) !== null,
+          )!,
+        ).getByLabelText("L 通道"),
+      ).toHaveTextContent("L");
+      expect(
+        within(
+          entries.find(
+            (entry) =>
+              within(entry).queryByRole("heading", {
+                level: 3,
+                name: "production corrected",
+              }) !== null,
+          )!,
+        ).getByLabelText("P 通道"),
+      ).toHaveTextContent("P");
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
   it("keeps undo available for eight seconds from the latest save and cleans up on unmount", async () => {
     const harness = await createHarness();
     const view = render(
