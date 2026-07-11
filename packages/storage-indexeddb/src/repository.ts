@@ -120,30 +120,34 @@ function assertValidCapture(
   }
 }
 
-function equalEnumerableProperties(
+async function equalEnumerableProperties(
   left: object,
   right: object,
   leftToRight: WeakMap<object, object>,
   rightToLeft: WeakMap<object, object>,
-): boolean {
+): Promise<boolean> {
   const leftRecord = left as Record<string, unknown>;
   const rightRecord = right as Record<string, unknown>;
   const leftKeys = Object.keys(leftRecord).sort();
   const rightKeys = Object.keys(rightRecord).sort();
 
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key, index) =>
-        key === rightKeys[index] &&
-        structurallyEqualValue(
-          leftRecord[key],
-          rightRecord[key],
-          leftToRight,
-          rightToLeft,
-        ),
-    )
-  );
+  if (leftKeys.length !== rightKeys.length) {
+    return false;
+  }
+  for (const [index, key] of leftKeys.entries()) {
+    if (
+      key !== rightKeys[index] ||
+      !(await structurallyEqualValue(
+        leftRecord[key],
+        rightRecord[key],
+        leftToRight,
+        rightToLeft,
+      ))
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function equalBufferBytes(
@@ -171,12 +175,12 @@ function equalBufferBytes(
   return leftBytes.every((byte, index) => byte === rightBytes[index]);
 }
 
-function structurallyEqualValue(
+async function structurallyEqualValue(
   left: unknown,
   right: unknown,
   leftToRight: WeakMap<object, object>,
   rightToLeft: WeakMap<object, object>,
-): boolean {
+): Promise<boolean> {
   if (Object.is(left, right)) {
     return true;
   }
@@ -211,7 +215,7 @@ function structurallyEqualValue(
       Array.isArray(left) &&
       Array.isArray(right) &&
       left.length === right.length &&
-      equalEnumerableProperties(left, right, leftToRight, rightToLeft)
+      (await equalEnumerableProperties(left, right, leftToRight, rightToLeft))
     );
   }
 
@@ -245,53 +249,61 @@ function structurallyEqualValue(
     return (
       left.byteOffset === right.byteOffset &&
       left.byteLength === right.byteLength &&
-      structurallyEqualValue(
+      (await structurallyEqualValue(
         left.buffer,
         right.buffer,
         leftToRight,
         rightToLeft,
-      )
+      ))
     );
   }
   if (leftTag === "[object Map]") {
     const leftEntries = [...(left as Map<unknown, unknown>).entries()];
     const rightEntries = [...(right as Map<unknown, unknown>).entries()];
-    return (
-      leftEntries.length === rightEntries.length &&
-      leftEntries.every((entry, index) => {
-        const rightEntry = rightEntries[index];
-        return (
-          rightEntry !== undefined &&
-          structurallyEqualValue(
-            entry[0],
-            rightEntry[0],
-            leftToRight,
-            rightToLeft,
-          ) &&
-          structurallyEqualValue(
-            entry[1],
-            rightEntry[1],
-            leftToRight,
-            rightToLeft,
-          )
-        );
-      })
-    );
+    if (leftEntries.length !== rightEntries.length) {
+      return false;
+    }
+    for (const [index, entry] of leftEntries.entries()) {
+      const rightEntry = rightEntries[index];
+      if (
+        rightEntry === undefined ||
+        !(await structurallyEqualValue(
+          entry[0],
+          rightEntry[0],
+          leftToRight,
+          rightToLeft,
+        )) ||
+        !(await structurallyEqualValue(
+          entry[1],
+          rightEntry[1],
+          leftToRight,
+          rightToLeft,
+        ))
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
   if (leftTag === "[object Set]") {
     const leftValues = [...(left as Set<unknown>).values()];
     const rightValues = [...(right as Set<unknown>).values()];
-    return (
-      leftValues.length === rightValues.length &&
-      leftValues.every((value, index) =>
-        structurallyEqualValue(
+    if (leftValues.length !== rightValues.length) {
+      return false;
+    }
+    for (const [index, value] of leftValues.entries()) {
+      if (
+        !(await structurallyEqualValue(
           value,
           rightValues[index],
           leftToRight,
           rightToLeft,
-        ),
-      )
-    );
+        ))
+      ) {
+        return false;
+      }
+    }
+    return true;
   }
   if (
     leftTag === "[object Boolean]" ||
@@ -312,13 +324,42 @@ function structurallyEqualValue(
       left.message === right.message &&
       leftHasCause === rightHasCause &&
       (!leftHasCause ||
-        structurallyEqualValue(
+        (await structurallyEqualValue(
           left.cause,
           right.cause,
           leftToRight,
           rightToLeft,
-        ))
+        )))
     );
+  }
+
+  if (leftTag === "[object Blob]" || leftTag === "[object File]") {
+    const leftBlob = left as Blob;
+    const rightBlob = right as Blob;
+    if (leftBlob.size !== rightBlob.size || leftBlob.type !== rightBlob.type) {
+      return false;
+    }
+    if (leftTag === "[object File]") {
+      const leftFile = left as Blob & {
+        readonly name: string;
+        readonly lastModified: number;
+      };
+      const rightFile = right as Blob & {
+        readonly name: string;
+        readonly lastModified: number;
+      };
+      if (
+        leftFile.name !== rightFile.name ||
+        leftFile.lastModified !== rightFile.lastModified
+      ) {
+        return false;
+      }
+    }
+    const [leftBuffer, rightBuffer] = await Promise.all([
+      leftBlob.arrayBuffer(),
+      rightBlob.arrayBuffer(),
+    ]);
+    return equalBufferBytes(leftBuffer, rightBuffer);
   }
 
   if (leftTag !== "[object Object]") {
@@ -333,7 +374,7 @@ function structurallyEqualValue(
   );
 }
 
-function structurallyEqual(left: unknown, right: unknown): boolean {
+function structurallyEqual(left: unknown, right: unknown): Promise<boolean> {
   return structurallyEqualValue(
     left,
     right,
@@ -361,12 +402,15 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     );
 
     try {
+      const storageEvents = events.map((event) => structuredClone(event));
+      const storageContext = structuredClone(context);
+      assertValidCapture(storageEvents, storageContext);
+
       const eventStore = transaction.objectStore("events");
-      for (const event of events) {
-        const storageEvent = structuredClone(event);
+      for (const storageEvent of storageEvents) {
         const existing = await eventStore.get(storageEvent.eventId);
         if (existing !== undefined) {
-          if (structurallyEqual(existing, storageEvent)) {
+          if (await structurallyEqual(existing, storageEvent)) {
             continue;
           }
           throw new Error(
@@ -375,7 +419,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
         }
         await eventStore.put(storageEvent);
       }
-      await transaction.objectStore("contexts").put(context);
+      await transaction.objectStore("contexts").put(storageContext);
       await transaction.done;
     } catch (error) {
       try {
@@ -402,12 +446,16 @@ class IndexedDBLedgerRepository implements LedgerRepository {
 
     const transaction = this.#database.transaction("events", "readwrite");
     try {
+      const storageEvents = events.map((event) => structuredClone(event));
+      for (const storageEvent of storageEvents) {
+        assertValidEvent(storageEvent);
+      }
+
       const eventStore = transaction.objectStore("events");
-      for (const event of events) {
-        const storageEvent = structuredClone(event);
+      for (const storageEvent of storageEvents) {
         const existing = await eventStore.get(storageEvent.eventId);
         if (existing !== undefined) {
-          if (structurallyEqual(existing, storageEvent)) {
+          if (await structurallyEqual(existing, storageEvent)) {
             continue;
           }
           throw new Error(
@@ -450,12 +498,19 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     );
 
     try {
-      const eventStore = transaction.objectStore("events");
       const storageEvent = structuredClone(event);
+      if (storageEvent.kind !== "capture_discarded") {
+        throw new TypeError(
+          "appendDiscard requires a capture_discarded event",
+        );
+      }
+      assertValidEvent(storageEvent);
+
+      const eventStore = transaction.objectStore("events");
       const existing = await eventStore.get(storageEvent.eventId);
       if (existing === undefined) {
         await eventStore.put(storageEvent);
-      } else if (!structurallyEqual(existing, storageEvent)) {
+      } else if (!(await structurallyEqual(existing, storageEvent))) {
         throw new Error(
           `eventId ${storageEvent.eventId} already exists with different content`,
         );

@@ -469,6 +469,48 @@ describe("openLedgerRepository", () => {
     });
   });
 
+  it("accepts an equal Blob replay for the same eventId", async () => {
+    const repository = await openTestRepository("event-blob-replay");
+    const createEvent = (contents: string): Event =>
+      ({
+        ...itemCreatedEvent,
+        eventId: "event-with-blob",
+        payload: {
+          ...itemCreatedEvent.payload,
+          attachment: new Blob([contents], { type: "text/plain" }),
+        },
+      }) as unknown as Event;
+
+    await repository.appendEvents([createEvent("tenjin")]);
+
+    await expect(
+      repository.appendEvents([createEvent("tenjin")]),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects a same-ID Blob replay with different bytes", async () => {
+    const repository = await openTestRepository("event-blob-conflict");
+    const createEvent = (contents: string): Event =>
+      ({
+        ...itemCreatedEvent,
+        eventId: "event-with-blob-conflict",
+        payload: {
+          ...itemCreatedEvent.payload,
+          attachment: new Blob([contents], { type: "text/plain" }),
+        },
+      }) as unknown as Event;
+    const storedEvent = createEvent("tenjin");
+
+    await repository.appendEvents([storedEvent]);
+
+    await expect(
+      repository.appendEvents([createEvent("TENJIN")]),
+    ).rejects.toThrow(/eventId/i);
+    const snapshot = await repository.readSnapshot();
+    const storedPayload = snapshot.events[0]?.payload as Record<string, unknown>;
+    expect(await (storedPayload.attachment as Blob).text()).toBe("tenjin");
+  });
+
   it("appends event-only batches, accepts empty batches, and returns sorted events", async () => {
     const repository = await openTestRepository("append-events");
 
@@ -492,6 +534,40 @@ describe("openLedgerRepository", () => {
     await expect(
       repository.appendEvents([captureCreatedEvent, invalidLaterEvent]),
     ).rejects.toThrow(/invalid event/i);
+    expect(await repository.readSnapshot()).toEqual({
+      events: [],
+      contexts: [],
+    });
+  });
+
+  it("validates the storage-normalized event after non-enumerable fields disappear", async () => {
+    const repository = await openTestRepository("normalized-event-validation");
+    const event = { ...itemCreatedEvent };
+    Object.defineProperty(event, "kind", {
+      value: itemCreatedEvent.kind,
+      enumerable: false,
+    });
+
+    await expect(repository.appendEvents([event])).rejects.toThrow(
+      /invalid event/i,
+    );
+    expect(await repository.readSnapshot()).toEqual({
+      events: [],
+      contexts: [],
+    });
+  });
+
+  it("validates storage-normalized capture context fields", async () => {
+    const repository = await openTestRepository("normalized-context-validation");
+    const nonEnumerableOriginal = { ...context };
+    Object.defineProperty(nonEnumerableOriginal, "original", {
+      value: context.original,
+      enumerable: false,
+    });
+
+    await expect(
+      repository.appendCapture([captureCreatedEvent], nonEnumerableOriginal),
+    ).rejects.toThrow(/context original/i);
     expect(await repository.readSnapshot()).toEqual({
       events: [],
       contexts: [],
@@ -529,6 +605,23 @@ describe("openLedgerRepository", () => {
     expect(await repository.readSnapshot()).toEqual({
       events: [captureCreatedEvent],
       contexts: [context],
+    });
+  });
+
+  it("validates a storage-normalized discard event", async () => {
+    const repository = await openTestRepository("normalized-discard-validation");
+    const event = { ...captureDiscardedEvent };
+    Object.defineProperty(event, "kind", {
+      value: captureDiscardedEvent.kind,
+      enumerable: false,
+    });
+
+    await expect(
+      repository.appendDiscard(event, context.hash),
+    ).rejects.toThrow(/capture_discarded|invalid event/i);
+    expect(await repository.readSnapshot()).toEqual({
+      events: [],
+      contexts: [],
     });
   });
 
