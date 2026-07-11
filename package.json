@@ -5,6 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@11.7.0",
   "scripts": {
+    "dev": "pnpm --filter @tenjin/web dev",
+    "preview": "pnpm --filter @tenjin/web preview",
     "test": "pnpm --recursive --if-present test",
     "typecheck": "pnpm --recursive --if-present typecheck",
     "build": "pnpm --recursive --if-present build",

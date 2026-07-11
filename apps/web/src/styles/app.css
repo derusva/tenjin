@@ -137,10 +137,10 @@ svg {
 }
 
 .record-question {
-  max-width: 12ch;
+  max-width: 100%;
   margin: 48px 0 0;
   font-family: var(--heading-font);
-  font-size: clamp(2.55rem, 11vw, 3.6rem);
+  font-size: clamp(2.25rem, 9.5vw, 3.6rem);
   font-weight: 500;
   letter-spacing: -0.045em;
   line-height: 1.14;
@@ -162,6 +162,7 @@ svg {
 .capture-input {
   display: block;
   width: 100%;
+  height: 136px;
   min-height: 136px;
   resize: vertical;
   border: 0;
@@ -175,6 +176,7 @@ svg {
 }
 
 .capture-input-corrected {
+  height: 92px;
   min-height: 92px;
   border: 1px solid var(--hairline);
   border-radius: var(--primary-radius);
