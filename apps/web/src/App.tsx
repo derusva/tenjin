@@ -10,6 +10,7 @@ import {
   SearchIcon,
   UndoIcon,
 } from "./components/icons.js";
+import type { StoragePersistenceStatus } from "./app/storagePersistence.js";
 import { CaptureComposer } from "./features/capture/CaptureComposer.js";
 import type { CaptureCommand } from "./features/capture/createCapture.js";
 import type { LedgerRuntime } from "./features/ledger/ledgerRuntime.js";
@@ -23,6 +24,7 @@ import { SearchView } from "./features/search/SearchView.js";
 export interface AppProps {
   readonly repository: LedgerRepository;
   readonly runtime: LedgerRuntime;
+  readonly storagePersistence?: StoragePersistenceStatus;
 }
 
 type AppView = "record" | "review" | "search" | "data";
@@ -40,7 +42,19 @@ const NAVIGATION: readonly {
 
 const UNDO_WINDOW_MS = 8_000;
 
-export function App({ repository, runtime }: AppProps) {
+const STORAGE_PERSISTENCE_COPY: Readonly<
+  Record<StoragePersistenceStatus, string>
+> = {
+  persisted: "存储状态：已持久化",
+  "best-effort": "存储状态：尽力保留",
+  unsupported: "存储状态：浏览器不支持持久化",
+};
+
+export function App({
+  repository,
+  runtime,
+  storagePersistence = "unsupported",
+}: AppProps) {
   const ledger = useLedger({ repository, runtime });
   const [currentView, setCurrentView] = useState<AppView>("record");
   const [reviewItems, setReviewItems] = useState<readonly ReviewItem[]>([]);
@@ -150,6 +164,8 @@ export function App({ repository, runtime }: AppProps) {
           <p>本地事件 {ledger.snapshot.events.length}</p>
           <p>本地上下文 {ledger.snapshot.contexts.length}</p>
           <p>仅保存在此设备</p>
+          <p>{STORAGE_PERSISTENCE_COPY[storagePersistence]}</p>
+          <p>本地数据仍可能被浏览器或系统清理，持久化也不代表绝对安全。</p>
         </div>
       </section>
     );

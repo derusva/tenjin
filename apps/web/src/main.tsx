@@ -4,15 +4,12 @@ import { registerSW } from "virtual:pwa-register";
 
 import { App } from "./App.js";
 import { installRepositoryLifecycle } from "./app/repositoryLifecycle.js";
+import { requestStoragePersistence } from "./app/storagePersistence.js";
 import { createLedgerRuntime } from "./features/ledger/ledgerRuntime.js";
 import "./styles/tokens.css";
 import "./styles/app.css";
 
 registerSW({ immediate: true });
-
-if (navigator.storage?.persist !== undefined) {
-  void navigator.storage.persist().catch(() => false);
-}
 
 const DEVICE_ID_KEY = "tenjin.deviceId";
 
@@ -41,6 +38,7 @@ async function main(): Promise<void> {
     throw new Error("Tenjin root element is missing");
   }
 
+  const storagePersistence = await requestStoragePersistence();
   const repository = await openLedgerRepository();
   const snapshot = await repository.readSnapshot();
   const runtime = createLedgerRuntime({
@@ -57,7 +55,11 @@ async function main(): Promise<void> {
   });
 
   createRoot(rootElement).render(
-    <App repository={repository} runtime={runtime} />,
+    <App
+      repository={repository}
+      runtime={runtime}
+      storagePersistence={storagePersistence}
+    />,
   );
 }
 

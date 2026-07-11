@@ -101,6 +101,58 @@ async function saveLookupWithFakeTimers(
 }
 
 describe("App", () => {
+  it("shows the actual storage protection status only in the data view", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        storagePersistence="persisted"
+      />,
+    );
+
+    try {
+      expect(
+        await screen.findByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/存储状态/)).not.toBeInTheDocument();
+
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+      expect(screen.getByText("存储状态：已持久化")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "本地数据仍可能被浏览器或系统清理，持久化也不代表绝对安全。",
+        ),
+      ).toBeInTheDocument();
+
+      view.rerender(
+        <App
+          repository={harness.repository}
+          runtime={harness.runtime}
+          storagePersistence="best-effort"
+        />,
+      );
+      expect(screen.getByText("存储状态：尽力保留")).toBeInTheDocument();
+
+      view.rerender(
+        <App
+          repository={harness.repository}
+          runtime={harness.runtime}
+          storagePersistence="unsupported"
+        />,
+      );
+      expect(
+        screen.getByText("存储状态：浏览器不支持持久化"),
+      ).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
   it("keeps review disabled until the initial snapshot is ready", async () => {
     const harness = await createHarness();
     const seededCapture = await harness.runtime.createCapture({
