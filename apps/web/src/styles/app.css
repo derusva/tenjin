@@ -487,6 +487,15 @@ svg {
   text-align: center;
 }
 
+.review-error {
+  margin: 0 0 18px;
+  border-left: 3px solid var(--vermilion);
+  padding: 10px 12px;
+  background: rgb(201 52 43 / 7%);
+  color: var(--ink);
+  font-size: 0.84rem;
+}
+
 .assessment-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -545,9 +554,43 @@ svg {
 .state-view {
   display: grid;
   min-height: 55dvh;
-  place-items: center;
+  align-content: center;
+  justify-items: center;
+  gap: 16px;
   color: var(--muted-ink);
   text-align: center;
+}
+
+.state-view > p {
+  margin: 0;
+}
+
+.ledger-warning {
+  display: grid;
+  max-width: 680px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin: 0 auto 22px;
+  border: 1px solid var(--vermilion);
+  padding: 12px 14px;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.ledger-warning p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.84rem;
+}
+
+.ledger-warning button {
+  border: 1px solid var(--forest);
+  padding-inline: 13px;
+  background: transparent;
+  color: var(--forest);
+  font-weight: 700;
 }
 
 .back-action {
@@ -651,6 +694,11 @@ svg {
   background: var(--forest);
   color: var(--paper);
   box-shadow: 0 8px 24px rgb(23 26 24 / 18%);
+}
+
+.undo-toast > span {
+  max-width: 38ch;
+  overflow-wrap: anywhere;
 }
 
 .undo-toast button {

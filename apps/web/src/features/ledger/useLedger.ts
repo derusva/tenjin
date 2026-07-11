@@ -1,10 +1,8 @@
 import {
   deriveLedger,
-  selectReviewItems,
   type CaptureCreatedEvent,
   type LedgerView,
   type LearningChannel,
-  type ReviewItem,
 } from "@tenjin/core";
 import type {
   ContextRecord,
@@ -14,6 +12,10 @@ import type {
 import { useEffect, useRef, useState } from "react";
 
 import type { CaptureCommand } from "../capture/createCapture.js";
+import {
+  buildReviewQueue,
+  type ReviewPresentation,
+} from "../review/reviewQueue.js";
 import type {
   LedgerRuntime,
   VerificationResult,
@@ -44,8 +46,9 @@ export interface UseLedgerResult {
   readonly error: string | undefined;
   readonly view: LedgerView;
   readonly snapshot: LedgerSnapshot;
-  readonly reviewItems: readonly ReviewItem[];
+  readonly reviewItems: readonly ReviewPresentation[];
   readonly recentEntries: readonly RecentEntry[];
+  retryRead(): Promise<void>;
   saveCapture(command: CaptureCommand): Promise<SaveCaptureResult>;
   answerReview(
     itemId: string,
@@ -123,6 +126,7 @@ export function useLedger({
   const [error, setError] = useState<string | undefined>(undefined);
   const [snapshot, setSnapshot] = useState<LedgerSnapshot>(EMPTY_SNAPSHOT);
   const mounted = useRef(false);
+  const hasSuccessfulSnapshot = useRef(false);
   const latestRefresh = useRef(0);
 
   useEffect(() => {
@@ -132,6 +136,7 @@ export function useLedger({
     void repository.readSnapshot().then(
       (nextSnapshot) => {
         if (mounted.current && refresh === latestRefresh.current) {
+          hasSuccessfulSnapshot.current = true;
           setSnapshot(nextSnapshot);
           setError(undefined);
           setStatus("ready");
@@ -156,6 +161,7 @@ export function useLedger({
     try {
       const nextSnapshot = await repository.readSnapshot();
       if (mounted.current && refresh === latestRefresh.current) {
+        hasSuccessfulSnapshot.current = true;
         setSnapshot(nextSnapshot);
         setError(undefined);
         setStatus("ready");
@@ -163,10 +169,16 @@ export function useLedger({
     } catch (readError) {
       if (mounted.current && refresh === latestRefresh.current) {
         setError(errorMessage(readError));
-        setStatus("error");
+        setStatus(hasSuccessfulSnapshot.current ? "ready" : "error");
       }
-      throw readError;
     }
+  }
+
+  async function retryRead(): Promise<void> {
+    if (!hasSuccessfulSnapshot.current && mounted.current) {
+      setStatus("loading");
+    }
+    await refresh();
   }
 
   async function saveCapture(
@@ -192,9 +204,8 @@ export function useLedger({
     channel: LearningChannel,
     result: VerificationResult,
   ): Promise<void> {
-    await repository.appendEvents([
-      runtime.createVerification(itemId, channel, result),
-    ]);
+    const event = await runtime.createVerification(itemId, channel, result);
+    await repository.appendEvents([event]);
     await refresh();
   }
 
@@ -202,10 +213,8 @@ export function useLedger({
     captureId: string,
     contextHash: string,
   ): Promise<void> {
-    await repository.appendDiscard(
-      runtime.createDiscard(captureId),
-      contextHash,
-    );
+    const event = await runtime.createDiscard(captureId);
+    await repository.appendDiscard(event, contextHash);
     await refresh();
   }
 
@@ -215,8 +224,9 @@ export function useLedger({
     error,
     view,
     snapshot,
-    reviewItems: selectReviewItems(view, 5),
+    reviewItems: buildReviewQueue(view, snapshot, 5),
     recentEntries: selectRecentEntries(snapshot),
+    retryRead,
     saveCapture,
     answerReview,
     discardCapture,

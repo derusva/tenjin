@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
 import { ReviewSession } from "./ReviewSession.js";
+import type { ReviewPresentation, ReviewReveal } from "./reviewQueue.js";
 
 function makeItem(itemId: string, display: string): ItemView {
   return {
@@ -25,12 +26,18 @@ function makeReviewItem(
   itemId: string,
   display: string,
   reason: ReviewItem["reason"] = "unstable",
-): ReviewItem {
+  presentation: {
+    readonly prompt?: string;
+    readonly reveal?: ReviewReveal;
+  } = {},
+): ReviewPresentation {
   return {
     itemId,
     channel: "R",
     reason,
     item: makeItem(itemId, display),
+    prompt: presentation.prompt ?? display,
+    reveal: presentation.reveal,
   };
 }
 
@@ -43,6 +50,32 @@ function createDeferred() {
 }
 
 describe("ReviewSession", () => {
+  it("shows the original P prompt and keeps the correction hidden until reveal", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[
+          makeReviewItem("item-1", "話します", "unstable", {
+            prompt: "話すです",
+            reveal: { label: "纠正后的表达", text: "話します" },
+          }),
+        ]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "話すです" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("話します")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+
+    expect(screen.getByText("纠正后的表达")).toBeInTheDocument();
+    expect(screen.getByText("話します")).toBeInTheDocument();
+  });
+
   it("hides evidence and explanation until the current item is revealed", async () => {
     const user = userEvent.setup();
     render(
@@ -184,6 +217,28 @@ describe("ReviewSession", () => {
     expect(screen.getByText("本次复习完成")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "结束本次" }));
     expect(exited).toBe(true);
+  });
+
+  it("keeps the current item and offers a retry when persistence fails", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[makeReviewItem("item-1", "天神")]}
+        onAnswer={async () => {
+          throw new Error("write failed");
+        }}
+        onExit={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+    await user.click(screen.getByRole("button", { name: "记得" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "回答未保存：write failed",
+    );
+    expect(screen.getByRole("heading", { name: "天神" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "记得" })).toBeEnabled();
   });
 
   it("focuses the next item heading after persistence", async () => {

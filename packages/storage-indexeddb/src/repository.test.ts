@@ -118,6 +118,66 @@ afterEach(async () => {
 });
 
 describe("openLedgerRepository", () => {
+  it("rejects instead of hanging when a legacy connection blocks the upgrade", async () => {
+    const dbName = createDatabaseName("blocked-legacy-upgrade");
+    const legacyDatabase = await openDB<LegacyLedgerDatabase>(dbName, 1, {
+      upgrade(database) {
+        database.createObjectStore("events", { keyPath: "eventId" });
+        database.createObjectStore("contexts", { keyPath: "hash" });
+      },
+    });
+    const opening = openLedgerRepository({ dbName });
+    const outcome = await Promise.race([
+      opening.then(
+        () => ({ status: "opened" }) as const,
+        (error: unknown) => ({
+          status: "rejected" as const,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      ),
+      new Promise<"still-pending">((resolve) => {
+        setTimeout(() => resolve("still-pending"), 50);
+      }),
+    ]);
+
+    legacyDatabase.close();
+    if (outcome === "still-pending") {
+      const lateRepository = await opening;
+      lateRepository.close();
+    }
+
+    expect(outcome).toEqual({
+      status: "rejected",
+      message: expect.stringContaining("关闭其他 Tenjin 标签页"),
+    });
+  });
+
+  it("releases its connection when a future schema upgrade starts", async () => {
+    const dbName = createDatabaseName("future-upgrade");
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    let futureDatabase: Awaited<ReturnType<typeof openDB>> | undefined;
+    const futureOpening = openDB(dbName, 3).then((database) => {
+      futureDatabase = database;
+      return "opened" as const;
+    });
+    const outcome = await Promise.race([
+      futureOpening,
+      new Promise<"still-pending">((resolve) => {
+        setTimeout(() => resolve("still-pending"), 50);
+      }),
+    ]);
+
+    if (outcome === "still-pending") {
+      repository.close();
+      openRepositories.delete(repository);
+      await futureOpening;
+    }
+    futureDatabase?.close();
+
+    expect(outcome).toBe("opened");
+  });
+
   it("does not expose its IndexedDB database through own properties", async () => {
     const repository = await openTestRepository("database-privacy");
 

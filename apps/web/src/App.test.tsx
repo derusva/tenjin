@@ -52,7 +52,8 @@ async function createHarness(): Promise<{
   let uuid = 0;
   const runtime = createLedgerRuntime({
     deviceId: "device-app-test",
-    existingEvents: [],
+    reserveEventCoordinates: (deviceId, physicalTime, count) =>
+      repository.reserveEventCoordinates(deviceId, physicalTime, count),
     now: () => new Date(now),
     randomUUID: () => `uuid-${++uuid}`,
     digest: async (text) => hexadecimalDigest(text),
@@ -101,6 +102,426 @@ async function saveLookupWithFakeTimers(
 }
 
 describe("App", () => {
+  it("offers a retry when the initial local snapshot read fails", async () => {
+    const harness = await createHarness();
+    let readAttempt = 0;
+    const retryingRepository: LedgerRepository = {
+      reserveEventCoordinates: (...args) =>
+        harness.repository.reserveEventCoordinates(...args),
+      appendCapture: (...args) => harness.repository.appendCapture(...args),
+      appendEvents: (...args) => harness.repository.appendEvents(...args),
+      appendDiscard: (...args) => harness.repository.appendDiscard(...args),
+      readSnapshot() {
+        readAttempt += 1;
+        return readAttempt === 1
+          ? Promise.reject(new Error("temporary read failure"))
+          : harness.repository.readSnapshot();
+      },
+      close: () => harness.repository.close(),
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={retryingRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "temporary read failure",
+      );
+      await user.click(screen.getByRole("button", { name: "重试读取" }));
+      expect(
+        await screen.findByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+      expect(readAttempt).toBe(2);
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("keeps the last snapshot after a committed write when refresh fails", async () => {
+    const harness = await createHarness();
+    let readAttempt = 0;
+    const staleRepository: LedgerRepository = {
+      reserveEventCoordinates: (...args) =>
+        harness.repository.reserveEventCoordinates(...args),
+      appendCapture: (...args) => harness.repository.appendCapture(...args),
+      appendEvents: (...args) => harness.repository.appendEvents(...args),
+      appendDiscard: (...args) => harness.repository.appendDiscard(...args),
+      readSnapshot() {
+        readAttempt += 1;
+        return readAttempt === 2
+          ? Promise.reject(new Error("refresh failed"))
+          : harness.repository.readSnapshot();
+      },
+      close: () => harness.repository.close(),
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={staleRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      expect(
+        await screen.findByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+      await user.type(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        "保存后刷新失败",
+      );
+      await user.click(screen.getByRole("button", { name: "记下来" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "当前显示的是上次快照",
+      );
+      expect(
+        screen.getByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+      await expect(harness.repository.readSnapshot()).resolves.toMatchObject({
+        events: expect.arrayContaining([
+          expect.objectContaining({ kind: "capture_created" }),
+        ]),
+      });
+
+      await user.click(screen.getByRole("button", { name: "重新读取" }));
+      expect(
+        await screen.findByRole("heading", { name: "保存后刷新失败" }),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("keeps the undo target available when discard persistence fails", async () => {
+    const harness = await createHarness();
+    let discardAttempts = 0;
+    const flakyRepository: LedgerRepository = {
+      reserveEventCoordinates: (...args) =>
+        harness.repository.reserveEventCoordinates(...args),
+      appendCapture: (...args) => harness.repository.appendCapture(...args),
+      appendEvents: (...args) => harness.repository.appendEvents(...args),
+      appendDiscard(...args) {
+        discardAttempts += 1;
+        return discardAttempts === 1
+          ? Promise.reject(new Error("discard failed"))
+          : harness.repository.appendDiscard(...args);
+      },
+      readSnapshot: () => harness.repository.readSnapshot(),
+      close: () => harness.repository.close(),
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={flakyRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+      await saveLookup(user, "undo retry");
+      await user.click(screen.getByRole("button", { name: "撤销" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "撤销失败：discard failed",
+      );
+      await user.click(screen.getByRole("button", { name: "重试撤销" }));
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "重试撤销" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(discardAttempts).toBe(2);
+      expect(
+        (await harness.repository.readSnapshot()).events.at(-1),
+      ).toMatchObject({ kind: "capture_discarded" });
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("does not attach an older undo failure to a newer capture", async () => {
+    const harness = await createHarness();
+    const firstDiscard = createDeferred<void>();
+    let discardAttempts = 0;
+    const concurrentRepository: LedgerRepository = {
+      reserveEventCoordinates: (...args) =>
+        harness.repository.reserveEventCoordinates(...args),
+      appendCapture: (...args) => harness.repository.appendCapture(...args),
+      appendEvents: (...args) => harness.repository.appendEvents(...args),
+      async appendDiscard(...args) {
+        discardAttempts += 1;
+        if (discardAttempts === 1) {
+          await firstDiscard.promise;
+          throw new Error("old discard failed");
+        }
+        await harness.repository.appendDiscard(...args);
+      },
+      readSnapshot: () => harness.repository.readSnapshot(),
+      close: () => harness.repository.close(),
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={concurrentRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+      await saveLookup(user, "older capture");
+      await user.click(screen.getByRole("button", { name: "撤销" }));
+      await saveLookup(user, "newer capture");
+
+      await act(async () => {
+        firstDiscard.resolve(undefined);
+        await firstDiscard.promise;
+      });
+
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled(),
+      );
+      expect(
+        screen.queryByRole("button", { name: "重试撤销" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("heading", { name: "newer capture" }),
+      ).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "撤销" }));
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("heading", { name: "newer capture" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("heading", { name: "older capture" }),
+      ).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("does not clear a newer undo target when an older undo succeeds", async () => {
+    const harness = await createHarness();
+    const firstDiscard = createDeferred<void>();
+    let discardAttempts = 0;
+    const concurrentRepository: LedgerRepository = {
+      reserveEventCoordinates: (...args) =>
+        harness.repository.reserveEventCoordinates(...args),
+      appendCapture: (...args) => harness.repository.appendCapture(...args),
+      appendEvents: (...args) => harness.repository.appendEvents(...args),
+      async appendDiscard(...args) {
+        discardAttempts += 1;
+        if (discardAttempts === 1) {
+          await firstDiscard.promise;
+        }
+        await harness.repository.appendDiscard(...args);
+      },
+      readSnapshot: () => harness.repository.readSnapshot(),
+      close: () => harness.repository.close(),
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={concurrentRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+      await saveLookup(user, "older capture");
+      await user.click(screen.getByRole("button", { name: "撤销" }));
+      await saveLookup(user, "newer capture");
+
+      await act(async () => {
+        firstDiscard.resolve(undefined);
+        await firstDiscard.promise;
+      });
+
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("heading", { name: "older capture" }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(
+        screen.getByRole("heading", { name: "newer capture" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "撤销" })).toBeEnabled();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("prevents review navigation from restarting an answer while it is saving", async () => {
+    const harness = await createHarness();
+    const seededCapture = await harness.runtime.createCapture({
+      type: "listening_miss",
+      original: "pending review item",
+    });
+    await harness.repository.appendCapture(
+      seededCapture.events,
+      seededCapture.context,
+    );
+    const answerWrite = createDeferred<void>();
+    let appendEventCalls = 0;
+    const delayedRepository: LedgerRepository = {
+      reserveEventCoordinates: (...args) =>
+        harness.repository.reserveEventCoordinates(...args),
+      appendCapture: (...args) => harness.repository.appendCapture(...args),
+      async appendEvents(...args) {
+        appendEventCalls += 1;
+        await answerWrite.promise;
+        await harness.repository.appendEvents(...args);
+      },
+      appendDiscard: (...args) => harness.repository.appendDiscard(...args),
+      readSnapshot: () => harness.repository.readSnapshot(),
+      close: () => harness.repository.close(),
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={delayedRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "pending review item" });
+      await user.click(screen.getByRole("button", { name: "复习 5 条" }));
+      await user.click(screen.getByRole("button", { name: "揭示" }));
+      await user.click(screen.getByRole("button", { name: "不记得" }));
+      await waitFor(() => expect(appendEventCalls).toBe(1));
+
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      const reviewNavigation = within(navigation).getByRole("button", {
+        name: "复习",
+      });
+      expect(reviewNavigation).toBeDisabled();
+      fireEvent.click(reviewNavigation);
+      expect(
+        screen.queryByRole("button", { name: "揭示" }),
+      ).not.toBeInTheDocument();
+
+      await act(async () => {
+        answerWrite.resolve(undefined);
+        await answerWrite.promise;
+      });
+      expect(
+        await screen.findByRole("heading", { name: "本次复习完成" }),
+      ).toBeInTheDocument();
+      expect(
+        (await harness.repository.readSnapshot()).events.filter(
+          (event) => event.kind === "verification_observed",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("keeps an unfinished correction draft across local navigation", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={harness.repository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+      await user.click(screen.getByRole("radio", { name: "表达纠正" }));
+      await user.type(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        "unfinished original",
+      );
+      await user.type(
+        screen.getByRole("textbox", { name: "纠正后的表达" }),
+        "unfinished correction",
+      );
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+
+      await user.click(
+        within(navigation).getByRole("button", { name: "搜索" }),
+      );
+      expect(
+        await screen.findByRole("heading", { name: "搜索" }),
+      ).toBeInTheDocument();
+      await user.click(
+        within(navigation).getByRole("button", { name: "记录" }),
+      );
+
+      expect(screen.getByRole("radio", { name: "表达纠正" })).toBeChecked();
+      expect(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+      ).toHaveValue("unfinished original");
+      expect(
+        screen.getByRole("textbox", { name: "纠正后的表达" }),
+      ).toHaveValue("unfinished correction");
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("keeps a failing capture draft visible by locking navigation while saving", async () => {
+    const harness = await createHarness();
+    const captureWrite = createDeferred<void>();
+    let appendCaptureCalls = 0;
+    const delayedRepository: LedgerRepository = {
+      reserveEventCoordinates: (...args) =>
+        harness.repository.reserveEventCoordinates(...args),
+      async appendCapture() {
+        appendCaptureCalls += 1;
+        await captureWrite.promise;
+        throw new Error("capture write failed");
+      },
+      appendEvents: (...args) => harness.repository.appendEvents(...args),
+      appendDiscard: (...args) => harness.repository.appendDiscard(...args),
+      readSnapshot: () => harness.repository.readSnapshot(),
+      close: () => harness.repository.close(),
+    };
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={delayedRepository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+      const input = screen.getByRole("textbox", {
+        name: "遇到的词或表达",
+      });
+      await user.type(input, "draft that must survive");
+      await user.click(screen.getByRole("button", { name: "记下来" }));
+      await waitFor(() => expect(appendCaptureCalls).toBe(1));
+
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      const searchNavigation = within(navigation).getByRole("button", {
+        name: "搜索",
+      });
+      expect(searchNavigation).toBeDisabled();
+      fireEvent.click(searchNavigation);
+      expect(input).toHaveValue("draft that must survive");
+
+      await act(async () => {
+        captureWrite.resolve(undefined);
+        await captureWrite.promise;
+      });
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "保存失败，请再试一次",
+      );
+      expect(input).toHaveValue("draft that must survive");
+      expect(searchNavigation).toBeEnabled();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+
   it("shows the actual storage protection status only in the data view", async () => {
     const harness = await createHarness();
     const user = userEvent.setup();
@@ -156,7 +577,7 @@ describe("App", () => {
   it("keeps review disabled until the initial snapshot is ready", async () => {
     const harness = await createHarness();
     const seededCapture = await harness.runtime.createCapture({
-      type: "lookup",
+      type: "listening_miss",
       original: "loaded item",
     });
     await harness.repository.appendCapture(
@@ -167,6 +588,13 @@ describe("App", () => {
     const initialRead = createDeferred<LedgerSnapshot>();
     let delayNextRead = true;
     const delayedRepository: LedgerRepository = {
+      reserveEventCoordinates(deviceId, physicalTime, count) {
+        return harness.repository.reserveEventCoordinates(
+          deviceId,
+          physicalTime,
+          count,
+        );
+      },
       appendCapture(events, context) {
         return harness.repository.appendCapture(events, context);
       },
@@ -304,7 +732,11 @@ describe("App", () => {
       expect(screen.getByText("P unstable")).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "撤销" }));
-      expect(screen.queryByRole("button", { name: "撤销" })).not.toBeInTheDocument();
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "撤销" }),
+        ).not.toBeInTheDocument(),
+      );
       expect(await screen.findByText("没有找到相关记录")).toBeInTheDocument();
 
       snapshot = await harness.repository.readSnapshot();
@@ -402,6 +834,10 @@ describe("App", () => {
       await user.click(screen.getByRole("button", { name: "记下来" }));
 
       const recent = await screen.findByRole("region", { name: "最近记录" });
+      await within(recent).findByRole("heading", {
+        level: 3,
+        name: "production corrected",
+      });
       const entries = within(recent).getAllByRole("listitem");
       expect(
         within(

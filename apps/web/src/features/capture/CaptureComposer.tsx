@@ -8,17 +8,32 @@ import {
 } from "../../components/icons.js";
 import type { CaptureCommand } from "./createCapture.js";
 
+export interface CaptureDraft {
+  readonly captureType: CaptureCommand["type"];
+  readonly original: string;
+  readonly corrected: string;
+}
+
 export interface CaptureComposerProps {
+  readonly draft?: CaptureDraft;
+  readonly onDraftChange?: (draft: CaptureDraft) => void;
   readonly onSave: (command: CaptureCommand) => Promise<void>;
 }
 
 type SaveStatus = "idle" | "saving" | "success" | "error";
 
-export function CaptureComposer({ onSave }: CaptureComposerProps) {
-  const [captureType, setCaptureType] =
-    useState<CaptureCommand["type"]>("lookup");
-  const [original, setOriginal] = useState("");
-  const [corrected, setCorrected] = useState("");
+export function CaptureComposer({
+  draft,
+  onDraftChange,
+  onSave,
+}: CaptureComposerProps) {
+  const [internalDraft, setInternalDraft] = useState<CaptureDraft>({
+    captureType: "lookup",
+    original: "",
+    corrected: "",
+  });
+  const currentDraft = draft ?? internalDraft;
+  const { captureType, original, corrected } = currentDraft;
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const captureStartedAt = useRef<number | undefined>(undefined);
   const mounted = useRef(true);
@@ -31,6 +46,13 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
       mounted.current = false;
     };
   }, []);
+
+  function updateDraft(nextDraft: CaptureDraft) {
+    if (draft === undefined) {
+      setInternalDraft(nextDraft);
+    }
+    onDraftChange?.(nextDraft);
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -84,8 +106,7 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
         return;
       }
 
-      setOriginal("");
-      setCorrected("");
+      updateDraft({ ...currentDraft, original: "", corrected: "" });
       captureStartedAt.current = Date.now();
       setSaveStatus("success");
     } catch {
@@ -114,7 +135,10 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
           value={original}
           disabled={isSaving}
           onChange={(event) => {
-            setOriginal(event.currentTarget.value);
+            updateDraft({
+              ...currentDraft,
+              original: event.currentTarget.value,
+            });
           }}
         />
 
@@ -127,7 +151,7 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
               value="lookup"
               checked={captureType === "lookup"}
               onChange={() => {
-                setCaptureType("lookup");
+                updateDraft({ ...currentDraft, captureType: "lookup" });
               }}
             />
             <LookupIcon aria-hidden="true" size={19} />
@@ -140,7 +164,10 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
               value="listening_miss"
               checked={captureType === "listening_miss"}
               onChange={() => {
-                setCaptureType("listening_miss");
+                updateDraft({
+                  ...currentDraft,
+                  captureType: "listening_miss",
+                });
               }}
             />
             <ListeningMissIcon aria-hidden="true" size={19} />
@@ -153,7 +180,10 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
               value="production_correction"
               checked={captureType === "production_correction"}
               onChange={() => {
-                setCaptureType("production_correction");
+                updateDraft({
+                  ...currentDraft,
+                  captureType: "production_correction",
+                });
               }}
             />
             <ProductionCorrectionIcon aria-hidden="true" size={19} />
@@ -172,7 +202,10 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
             value={corrected}
             disabled={isSaving}
             onChange={(event) => {
-              setCorrected(event.currentTarget.value);
+              updateDraft({
+                ...currentDraft,
+                corrected: event.currentTarget.value,
+              });
             }}
           />
         </div>

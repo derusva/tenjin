@@ -891,10 +891,28 @@ class IndexedDBLedgerRepository implements LedgerRepository {
 export async function openLedgerRepository(
   options: OpenLedgerRepositoryOptions = {},
 ): Promise<LedgerRepository> {
-  const database = await openDB<LedgerDatabase>(
-    options.dbName ?? "tenjin-ledger",
+  const databaseName = options.dbName ?? "tenjin-ledger";
+  let upgradeWasBlocked = false;
+  let openedDatabase: IDBPDatabase<LedgerDatabase> | undefined;
+  let rejectBlocked: (reason: Error) => void = () => undefined;
+  const blockedOpening = new Promise<never>((_resolve, reject) => {
+    rejectBlocked = reject;
+  });
+  const opening = openDB<LedgerDatabase>(
+    databaseName,
     2,
     {
+      blocked() {
+        upgradeWasBlocked = true;
+        rejectBlocked(
+          new Error(
+            "本地账本升级被其他 Tenjin 标签页占用。请关闭其他 Tenjin 标签页后重试。",
+          ),
+        );
+      },
+      blocking() {
+        openedDatabase?.close();
+      },
       upgrade(database, oldVersion) {
         if (oldVersion < 1) {
           database.createObjectStore("events", { keyPath: "eventId" });
@@ -906,6 +924,19 @@ export async function openLedgerRepository(
       },
     },
   );
+  void opening.then(
+    (database) => {
+      if (upgradeWasBlocked) {
+        database.close();
+      } else {
+        openedDatabase = database;
+      }
+    },
+    () => undefined,
+  );
+
+  const database = await Promise.race([opening, blockedOpening]);
+  openedDatabase = database;
 
   return new IndexedDBLedgerRepository(database);
 }

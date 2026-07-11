@@ -1,4 +1,4 @@
-import type { LearningChannel, ReviewItem } from "@tenjin/core";
+import type { LearningChannel } from "@tenjin/core";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -7,9 +7,10 @@ import {
   AssessmentPassIcon,
 } from "../../components/icons.js";
 import type { VerificationResult } from "../ledger/ledgerRuntime.js";
+import type { ReviewPresentation } from "./reviewQueue.js";
 
 export interface ReviewSessionProps {
-  readonly items: readonly ReviewItem[];
+  readonly items: readonly ReviewPresentation[];
   readonly onAnswer: (
     itemId: string,
     channel: LearningChannel,
@@ -18,7 +19,7 @@ export interface ReviewSessionProps {
   readonly onExit: () => void;
 }
 
-const REASON_COPY: Readonly<Record<ReviewItem["reason"], string>> = {
+const REASON_COPY: Readonly<Record<ReviewPresentation["reason"], string>> = {
   "recent-failure": "最近一次没有想起来",
   unstable: "这个通道仍不稳定",
   "stable-check": "低频确认，确保仍能调用",
@@ -33,6 +34,7 @@ export function ReviewSession({
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [announcement, setAnnouncement] = useState("");
+  const [saveError, setSaveError] = useState<string | undefined>();
   const firstAssessmentRef = useRef<HTMLButtonElement>(null);
   const nextContentRef = useRef<HTMLHeadingElement>(null);
   const shouldFocusNextContentRef = useRef(false);
@@ -54,8 +56,12 @@ export function ReviewSession({
   }, [currentIndex]);
 
   const liveStatus = (
-    <p className="visually-hidden" role="status" aria-atomic="true">
-      {announcement}
+    <p
+      className={saveError === undefined ? "visually-hidden" : "review-error"}
+      role={saveError === undefined ? "status" : "alert"}
+      aria-atomic="true"
+    >
+      {saveError ?? announcement}
     </p>
   );
 
@@ -88,6 +94,7 @@ export function ReviewSession({
 
   async function answer(result: VerificationResult) {
     setSaving(true);
+    setSaveError(undefined);
     try {
       await onAnswer(itemToReview.itemId, itemToReview.channel, result);
       shouldFocusNextContentRef.current = true;
@@ -98,6 +105,9 @@ export function ReviewSession({
       );
       setCurrentIndex((index) => index + 1);
       setRevealed(false);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "未知错误";
+      setSaveError(`回答未保存：${detail}。请重试。`);
     } finally {
       setSaving(false);
     }
@@ -118,12 +128,21 @@ export function ReviewSession({
       </header>
       <article className="review-item">
         <h1 id="review-item-title" ref={nextContentRef} tabIndex={-1}>
-          {current.item.display}
+          {current.prompt}
         </h1>
         <p className="review-channel">{current.channel} 通道</p>
 
         {revealed ? (
           <>
+            {current.reveal === undefined ? null : (
+              <section
+                className="ruled-section review-answer"
+                aria-labelledby="review-answer-title"
+              >
+                <h2 id="review-answer-title">{current.reveal.label}</h2>
+                <p>{current.reveal.text}</p>
+              </section>
+            )}
             <section className="ruled-section" aria-labelledby="review-notes-title">
               <h2 id="review-notes-title">笔记</h2>
               <p>暂无笔记</p>
@@ -169,6 +188,7 @@ export function ReviewSession({
             className="reveal-action"
             type="button"
             onClick={() => {
+              setSaveError(undefined);
               setAnnouncement("内容已揭示，请选择自我评估");
               setRevealed(true);
             }}

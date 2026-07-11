@@ -7,7 +7,9 @@ export default defineConfig({
     react(),
     VitePWA({
       strategies: "generateSW",
-      registerType: "autoUpdate",
+      // A waiting worker activates after every client closes, so an in-memory
+      // capture draft is never discarded by an automatic reload.
+      registerType: "prompt",
       includeAssets: [
         "apple-touch-icon.png",
         "tenjin-192.png",
