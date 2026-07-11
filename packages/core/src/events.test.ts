@@ -6,6 +6,7 @@ import {
 } from "./events.js";
 
 const captureCreatedEvent = {
+  schemaVersion: 1,
   eventId: "event-1",
   deviceId: "device-1",
   seq: 1,
@@ -24,17 +25,31 @@ const captureCreatedEvent = {
   },
 } as const satisfies CaptureCreatedEvent;
 
+const {
+  captureId: captureCreatedCaptureId,
+  contextHash: captureCreatedContextHash,
+  kind: captureCreatedKind,
+  payload: captureCreatedPayload,
+  ...baseEnvelope
+} = captureCreatedEvent;
+void captureCreatedCaptureId;
+void captureCreatedContextHash;
+void captureCreatedKind;
+void captureCreatedPayload;
+
 const supportedEvents = [
   captureCreatedEvent,
   {
-    ...captureCreatedEvent,
+    ...baseEnvelope,
     kind: "capture_discarded",
+    captureId: "capture-1",
     payload: { reason: "undo" },
   },
   {
-    ...captureCreatedEvent,
+    ...baseEnvelope,
     kind: "item_created",
     itemId: "item-1",
+    captureId: "capture-1",
     payload: {
       display: "天神",
       identityKey: "天神",
@@ -42,25 +57,28 @@ const supportedEvents = [
     },
   },
   {
-    ...captureCreatedEvent,
+    ...baseEnvelope,
     kind: "lookup_observed",
     itemId: "item-1",
+    captureId: "capture-1",
     payload: { channel: "R", result: "lookup" },
   },
   {
-    ...captureCreatedEvent,
+    ...baseEnvelope,
     kind: "listening_miss_observed",
     itemId: "item-1",
+    captureId: "capture-1",
     payload: { channel: "L", result: "miss" },
   },
   {
-    ...captureCreatedEvent,
+    ...baseEnvelope,
     kind: "production_correction_observed",
     itemId: "item-1",
+    captureId: "capture-1",
     payload: { channel: "P", result: "correction" },
   },
   {
-    ...captureCreatedEvent,
+    ...baseEnvelope,
     kind: "verification_observed",
     itemId: "item-1",
     payload: {
@@ -91,6 +109,112 @@ describe("validateEvent", () => {
       valid: true,
       value: captureCreatedEvent,
     });
+  });
+
+  it("rejects an event whose schemaVersion is missing", () => {
+    const { schemaVersion, ...candidate } = captureCreatedEvent;
+    void schemaVersion;
+
+    expectInvalidField(candidate, "schemaVersion");
+  });
+
+  it.each([0, 2, -1, 1.5, "1"])(
+    "rejects an unsupported schemaVersion (%j)",
+    (schemaVersion) => {
+      expectInvalidField(
+        { ...captureCreatedEvent, schemaVersion },
+        "schemaVersion",
+      );
+    },
+  );
+
+  it.each(supportedEvents)(
+    "rejects an unknown $kind envelope field",
+    (event) => {
+      expectInvalidField(
+        { ...event, futureEnvelopeField: "not yet supported" },
+        "futureEnvelopeField",
+      );
+    },
+  );
+
+  it.each([
+    [{ ...supportedEvents[0], itemId: "item-1" }, "itemId"],
+    [{ ...supportedEvents[1], contextHash: "sha256:context-1" }, "contextHash"],
+    [{ ...supportedEvents[2], contextHash: "sha256:context-1" }, "contextHash"],
+    [{ ...supportedEvents[3], contextHash: "sha256:context-1" }, "contextHash"],
+    [{ ...supportedEvents[4], contextHash: "sha256:context-1" }, "contextHash"],
+    [{ ...supportedEvents[5], contextHash: "sha256:context-1" }, "contextHash"],
+    [{ ...supportedEvents[6], captureId: "capture-1" }, "captureId"],
+  ])(
+    "rejects a known envelope field that is not allowed for its kind %j",
+    (candidate, field) => {
+      expectInvalidField(candidate, field);
+    },
+  );
+
+  it("rejects unknown HLC fields", () => {
+    expectInvalidField(
+      {
+        ...captureCreatedEvent,
+        hlc: { ...captureCreatedEvent.hlc, logicalNode: "device-1" },
+      },
+      "hlc.logicalNode",
+    );
+  });
+
+  it.each([
+    [
+      {
+        ...supportedEvents[0],
+        payload: { ...supportedEvents[0].payload, futurePayloadField: true },
+      },
+      "payload.futurePayloadField",
+    ],
+    [
+      {
+        ...supportedEvents[1],
+        payload: { ...supportedEvents[1].payload, futurePayloadField: true },
+      },
+      "payload.futurePayloadField",
+    ],
+    [
+      {
+        ...supportedEvents[2],
+        payload: { ...supportedEvents[2].payload, original: "天神" },
+      },
+      "payload.original",
+    ],
+    [
+      {
+        ...supportedEvents[3],
+        payload: { ...supportedEvents[3].payload, futurePayloadField: true },
+      },
+      "payload.futurePayloadField",
+    ],
+    [
+      {
+        ...supportedEvents[4],
+        payload: { ...supportedEvents[4].payload, futurePayloadField: true },
+      },
+      "payload.futurePayloadField",
+    ],
+    [
+      {
+        ...supportedEvents[5],
+        payload: { ...supportedEvents[5].payload, futurePayloadField: true },
+      },
+      "payload.futurePayloadField",
+    ],
+    [
+      {
+        ...supportedEvents[6],
+        payload: { ...supportedEvents[6].payload, futurePayloadField: true },
+      },
+      "payload.futurePayloadField",
+    ],
+  ])("rejects an unknown kind-specific payload field %j", (candidate, field) => {
+    expectInvalidField(candidate, field);
   });
 
   it("rejects non-object input without throwing", () => {

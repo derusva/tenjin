@@ -202,6 +202,69 @@ const CAPTURE_CREATED_PAYLOAD_FIELDS = new Set([
   "captureType",
   "captureDurationMs",
 ]);
+const CAPTURE_DISCARDED_PAYLOAD_FIELDS = new Set(["reason"]);
+const ITEM_CREATED_PAYLOAD_FIELDS = new Set([
+  "display",
+  "identityKey",
+  "targetChannels",
+]);
+const CHANNEL_OBSERVATION_PAYLOAD_FIELDS = new Set(["channel", "result"]);
+const VERIFICATION_OBSERVED_PAYLOAD_FIELDS = new Set([
+  "channel",
+  "result",
+  "probeSource",
+  "immediateRetest",
+]);
+const HLC_FIELDS = new Set(["wallTime", "counter"]);
+const COMMON_EVENT_ENVELOPE_FIELDS = [
+  "schemaVersion",
+  "eventId",
+  "deviceId",
+  "seq",
+  "hlc",
+  "occurredAt",
+  "recordedAt",
+  "actor",
+  "kind",
+  "ruleVersion",
+  "refs",
+  "payload",
+] as const;
+const EVENT_ENVELOPE_FIELDS: Readonly<Record<EventKind, ReadonlySet<string>>> = {
+  capture_created: new Set([
+    ...COMMON_EVENT_ENVELOPE_FIELDS,
+    "captureId",
+    "contextHash",
+  ]),
+  capture_discarded: new Set([
+    ...COMMON_EVENT_ENVELOPE_FIELDS,
+    "captureId",
+  ]),
+  item_created: new Set([
+    ...COMMON_EVENT_ENVELOPE_FIELDS,
+    "itemId",
+    "captureId",
+  ]),
+  lookup_observed: new Set([
+    ...COMMON_EVENT_ENVELOPE_FIELDS,
+    "itemId",
+    "captureId",
+  ]),
+  listening_miss_observed: new Set([
+    ...COMMON_EVENT_ENVELOPE_FIELDS,
+    "itemId",
+    "captureId",
+  ]),
+  production_correction_observed: new Set([
+    ...COMMON_EVENT_ENVELOPE_FIELDS,
+    "itemId",
+    "captureId",
+  ]),
+  verification_observed: new Set([
+    ...COMMON_EVENT_ENVELOPE_FIELDS,
+    "itemId",
+  ]),
+};
 const EVENT_KIND_SET = new Set<EventKind>(EVENT_KINDS);
 const EVENT_ACTORS = new Set<unknown>([
   "user",
@@ -220,18 +283,37 @@ const VERIFICATION_RESULTS = new Set<unknown>([
   "fail",
 ]);
 
-function validateOptionalEnvelopeFields(
+function validateAllowedFields(
+  record: Record<string, unknown>,
+  allowedFields: ReadonlySet<string>,
+  errors: ValidationIssue[],
+  fieldPrefix = "",
+  eventKind?: EventKind,
+): void {
+  for (const field of Object.keys(record)) {
+    if (allowedFields.has(field)) {
+      continue;
+    }
+
+    const issueField = fieldPrefix.length > 0 ? `${fieldPrefix}.${field}` : field;
+    errors.push({
+      field: issueField,
+      message:
+        eventKind === undefined
+          ? `${issueField} is not allowed`
+          : `${issueField} is not allowed for ${eventKind}`,
+    });
+  }
+}
+
+function validateEnvelopeFields(
   candidate: Record<string, unknown>,
   errors: ValidationIssue[],
 ): void {
-  if (
-    Object.hasOwn(candidate, "schemaVersion") &&
-    (!Number.isSafeInteger(candidate.schemaVersion) ||
-      (candidate.schemaVersion as number) <= 0)
-  ) {
+  if (candidate.schemaVersion !== 1) {
     errors.push({
       field: "schemaVersion",
-      message: "schemaVersion must be a positive safe integer",
+      message: "schemaVersion must be 1",
     });
   }
 
@@ -250,15 +332,6 @@ function validateOptionalEnvelopeFields(
       field: "ruleVersion",
       message: "ruleVersion must be a non-empty string",
     });
-  }
-
-  for (const field of ["itemId", "captureId", "contextHash"] as const) {
-    if (Object.hasOwn(candidate, field) && !isNonEmptyString(candidate[field])) {
-      errors.push({
-        field,
-        message: `${field} must be a non-empty string when present`,
-      });
-    }
   }
 
   if (
@@ -285,6 +358,14 @@ function validateCaptureCreated(
     return;
   }
 
+  validateAllowedFields(
+    payload,
+    CAPTURE_CREATED_PAYLOAD_FIELDS,
+    errors,
+    "payload",
+    "capture_created",
+  );
+
   if (!CAPTURE_TYPES.has(payload.captureType as string)) {
     errors.push({
       field: "payload.captureType",
@@ -303,14 +384,6 @@ function validateCaptureCreated(
     });
   }
 
-  for (const field of Object.keys(payload)) {
-    if (!CAPTURE_CREATED_PAYLOAD_FIELDS.has(field)) {
-      errors.push({
-        field: `payload.${field}`,
-        message: `payload.${field} is not allowed for capture_created`,
-      });
-    }
-  }
 }
 
 function validateCaptureDiscarded(
@@ -319,6 +392,16 @@ function validateCaptureDiscarded(
 ): void {
   addNonEmptyStringIssue(candidate, "captureId", errors);
   const payload = getPayload(candidate, errors);
+
+  if (payload !== undefined) {
+    validateAllowedFields(
+      payload,
+      CAPTURE_DISCARDED_PAYLOAD_FIELDS,
+      errors,
+      "payload",
+      "capture_discarded",
+    );
+  }
 
   if (
     payload !== undefined &&
@@ -343,6 +426,14 @@ function validateItemCreated(
   if (payload === undefined) {
     return;
   }
+
+  validateAllowedFields(
+    payload,
+    ITEM_CREATED_PAYLOAD_FIELDS,
+    errors,
+    "payload",
+    "item_created",
+  );
 
   addNonEmptyStringIssue(payload, "display", errors, "payload.display");
   addNonEmptyStringIssue(payload, "identityKey", errors, "payload.identityKey");
@@ -371,6 +462,14 @@ function validateChannelObservation(
     return;
   }
 
+  validateAllowedFields(
+    payload,
+    CHANNEL_OBSERVATION_PAYLOAD_FIELDS,
+    errors,
+    "payload",
+    candidate.kind as EventKind,
+  );
+
   if (payload.channel !== channel) {
     errors.push({
       field: "payload.channel",
@@ -394,6 +493,14 @@ function validateVerificationObserved(
   if (payload === undefined) {
     return;
   }
+
+  validateAllowedFields(
+    payload,
+    VERIFICATION_OBSERVED_PAYLOAD_FIELDS,
+    errors,
+    "payload",
+    "verification_observed",
+  );
 
   if (!LEARNING_CHANNELS.has(payload.channel)) {
     errors.push({
@@ -453,7 +560,7 @@ export function validateEvent(event: unknown): ValidationResult {
     });
   }
 
-  validateOptionalEnvelopeFields(candidate, errors);
+  validateEnvelopeFields(candidate, errors);
 
   if (!Number.isSafeInteger(candidate.seq) || (candidate.seq as number) <= 0) {
     errors.push({
@@ -490,6 +597,8 @@ export function validateEvent(event: unknown): ValidationResult {
         message: "hlc.counter must be a non-negative safe integer",
       });
     }
+
+    validateAllowedFields(hlc, HLC_FIELDS, errors, "hlc");
   }
 
   if (occurredAt === undefined) {
@@ -525,6 +634,14 @@ export function validateEvent(event: unknown): ValidationResult {
       field: "kind",
       message: "kind must be a supported event kind",
     });
+  } else {
+    validateAllowedFields(
+      candidate,
+      EVENT_ENVELOPE_FIELDS[candidate.kind as EventKind],
+      errors,
+      "",
+      candidate.kind as EventKind,
+    );
   }
 
   switch (candidate.kind) {
