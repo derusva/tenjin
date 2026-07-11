@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "pnpm --filter @tenjin/storage-indexeddb build",
     "dev": "vite",
     "preview": "vite preview",
     "pretest": "pnpm --filter @tenjin/storage-indexeddb build",
