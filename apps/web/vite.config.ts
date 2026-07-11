@@ -8,7 +8,14 @@ export default defineConfig({
     VitePWA({
       strategies: "generateSW",
       registerType: "autoUpdate",
-      includeAssets: ["tenjin-mark.svg"],
+      includeAssets: [
+        "apple-touch-icon.png",
+        "tenjin-192.png",
+        "tenjin-512.png",
+        "tenjin-maskable.svg",
+        "tenjin-maskable-512.png",
+        "tenjin-mark.svg",
+      ],
       manifest: {
         name: "Tenjin 日语学习账本",
         short_name: "Tenjin",
@@ -20,10 +27,22 @@ export default defineConfig({
         theme_color: "#123F31",
         icons: [
           {
-            src: "tenjin-mark.svg",
-            sizes: "any",
-            type: "image/svg+xml",
-            purpose: "any maskable",
+            src: "tenjin-192.png",
+            sizes: "192x192",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "tenjin-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "any",
+          },
+          {
+            src: "tenjin-maskable-512.png",
+            sizes: "512x512",
+            type: "image/png",
+            purpose: "maskable",
           },
         ],
       },
