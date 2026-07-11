@@ -1,5 +1,5 @@
 import type { LearningChannel, ReviewItem } from "@tenjin/core";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   AssessmentFailIcon,
@@ -32,11 +32,37 @@ export function ReviewSession({
   const [currentIndex, setCurrentIndex] = useState(0);
   const [revealed, setRevealed] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [announcement, setAnnouncement] = useState("");
+  const firstAssessmentRef = useRef<HTMLButtonElement>(null);
+  const nextContentRef = useRef<HTMLHeadingElement>(null);
+  const shouldFocusNextContentRef = useRef(false);
   const current = items[currentIndex];
+
+  useEffect(() => {
+    if (revealed) {
+      firstAssessmentRef.current?.focus();
+    }
+  }, [revealed]);
+
+  useEffect(() => {
+    if (!shouldFocusNextContentRef.current) {
+      return;
+    }
+
+    nextContentRef.current?.focus();
+    shouldFocusNextContentRef.current = false;
+  }, [currentIndex]);
+
+  const liveStatus = (
+    <p className="visually-hidden" role="status" aria-atomic="true">
+      {announcement}
+    </p>
+  );
 
   if (items.length === 0) {
     return (
       <section className="review-view utility-view" aria-labelledby="empty-review-title">
+        {liveStatus}
         <h1 id="empty-review-title">暂时没有可复习的内容</h1>
         <button className="secondary-action" type="button" onClick={onExit}>
           返回记录
@@ -48,7 +74,10 @@ export function ReviewSession({
   if (current === undefined) {
     return (
       <section className="review-view utility-view" aria-labelledby="review-complete-title">
-        <h1 id="review-complete-title">本次复习完成</h1>
+        {liveStatus}
+        <h1 id="review-complete-title" ref={nextContentRef} tabIndex={-1}>
+          本次复习完成
+        </h1>
         <button className="secondary-action" type="button" onClick={onExit}>
           结束本次
         </button>
@@ -61,6 +90,12 @@ export function ReviewSession({
     setSaving(true);
     try {
       await onAnswer(itemToReview.itemId, itemToReview.channel, result);
+      shouldFocusNextContentRef.current = true;
+      setAnnouncement(
+        currentIndex + 1 < items.length
+          ? "回答已保存，下一题已载入"
+          : "回答已保存",
+      );
       setCurrentIndex((index) => index + 1);
       setRevealed(false);
     } finally {
@@ -74,6 +109,7 @@ export function ReviewSession({
       aria-labelledby="review-item-title"
       aria-busy={saving}
     >
+      {liveStatus}
       <header className="review-header">
         <p className="wordmark">Tenjin</p>
         <p className="review-progress">
@@ -81,7 +117,9 @@ export function ReviewSession({
         </p>
       </header>
       <article className="review-item">
-        <h1 id="review-item-title">{current.item.display}</h1>
+        <h1 id="review-item-title" ref={nextContentRef} tabIndex={-1}>
+          {current.item.display}
+        </h1>
         <p className="review-channel">{current.channel} 通道</p>
 
         {revealed ? (
@@ -99,6 +137,7 @@ export function ReviewSession({
               <button
                 className="assessment-pass"
                 type="button"
+                ref={firstAssessmentRef}
                 disabled={saving}
                 onClick={() => answer("pass")}
               >
@@ -129,7 +168,10 @@ export function ReviewSession({
           <button
             className="reveal-action"
             type="button"
-            onClick={() => setRevealed(true)}
+            onClick={() => {
+              setAnnouncement("内容已揭示，请选择自我评估");
+              setRevealed(true);
+            }}
           >
             揭示
           </button>

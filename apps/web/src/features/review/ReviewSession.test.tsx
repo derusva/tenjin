@@ -71,6 +71,39 @@ describe("ReviewSession", () => {
     expect(screen.getByRole("button", { name: "不记得" })).toBeEnabled();
   });
 
+  it("moves focus to the first assessment after revealing", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[makeReviewItem("item-1", "天神")]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+
+    expect(screen.getByRole("button", { name: "记得" })).toHaveFocus();
+  });
+
+  it("announces the reveal through one status region", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[makeReviewItem("item-1", "天神")]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "内容已揭示，请选择自我评估",
+    );
+  });
+
   it.each([
     ["recent-failure", "最近一次没有想起来"],
     ["unstable", "这个通道仍不稳定"],
@@ -151,6 +184,86 @@ describe("ReviewSession", () => {
     expect(screen.getByText("本次复习完成")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "结束本次" }));
     expect(exited).toBe(true);
+  });
+
+  it("focuses the next item heading after persistence", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[
+          makeReviewItem("item-1", "天神"),
+          makeReviewItem("item-2", "神社"),
+        ]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+    await user.click(screen.getByRole("button", { name: "记得" }));
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "神社" }),
+    ).toHaveFocus();
+  });
+
+  it("announces persistence without repeating the next item title", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[
+          makeReviewItem("item-1", "天神"),
+          makeReviewItem("item-2", "神社"),
+        ]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+    await user.click(screen.getByRole("button", { name: "记得" }));
+
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "回答已保存，下一题已载入",
+    );
+    expect(screen.getByRole("status")).not.toHaveTextContent("神社");
+  });
+
+  it("focuses the completion heading after the final answer", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[makeReviewItem("item-1", "天神")]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+    await user.click(screen.getByRole("button", { name: "记得" }));
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: "本次复习完成" }),
+    ).toHaveFocus();
+  });
+
+  it("announces final persistence without repeating the completion heading", async () => {
+    const user = userEvent.setup();
+    render(
+      <ReviewSession
+        items={[makeReviewItem("item-1", "天神")]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+    await user.click(screen.getByRole("button", { name: "记得" }));
+
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent("回答已保存");
+    expect(screen.getByRole("status")).not.toHaveTextContent("本次复习完成");
   });
 
   it("offers a return action when no items are available", async () => {
