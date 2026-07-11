@@ -6,7 +6,7 @@ import type {
   Event,
   ItemCreatedEvent,
 } from "@tenjin/core";
-import { deleteDB } from "idb";
+import { deleteDB, openDB, type DBSchema } from "idb";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -33,6 +33,7 @@ async function openTestRepository(testName: string): Promise<LedgerRepository> {
 }
 
 const captureCreatedEvent = {
+  schemaVersion: 1,
   eventId: "event-capture-1",
   deviceId: "device-1",
   seq: 1,
@@ -58,6 +59,7 @@ const context = {
 } as const;
 
 const itemCreatedEvent = {
+  schemaVersion: 1,
   eventId: "event-item-1",
   deviceId: "device-1",
   seq: 2,
@@ -78,6 +80,7 @@ const itemCreatedEvent = {
 } as const satisfies ItemCreatedEvent;
 
 const captureDiscardedEvent = {
+  schemaVersion: 1,
   eventId: "event-discard-1",
   deviceId: "device-1",
   seq: 3,
@@ -93,6 +96,17 @@ const captureDiscardedEvent = {
     reason: "undo",
   },
 } as const satisfies CaptureDiscardedEvent;
+
+interface LegacyLedgerDatabase extends DBSchema {
+  events: {
+    key: string;
+    value: Event;
+  };
+  contexts: {
+    key: string;
+    value: ContextRecord;
+  };
+}
 
 afterEach(async () => {
   for (const repository of openRepositories) {
@@ -119,6 +133,164 @@ describe("openLedgerRepository", () => {
         }),
       ]),
     );
+  });
+
+  it("atomically reserves unique coordinates across repository instances", async () => {
+    const dbName = createDatabaseName("coordinate-concurrency");
+    const firstRepository = await openLedgerRepository({ dbName });
+    const secondRepository = await openLedgerRepository({ dbName });
+    openRepositories.add(firstRepository);
+    openRepositories.add(secondRepository);
+    const physicalTime = Date.parse("2026-07-11T03:00:00.000Z");
+
+    const [first, second] = await Promise.all([
+      firstRepository.reserveEventCoordinates(
+        "device-shared",
+        physicalTime,
+        2,
+      ),
+      secondRepository.reserveEventCoordinates(
+        "device-shared",
+        physicalTime,
+        2,
+      ),
+    ]);
+
+    const coordinates = [...first, ...second];
+    expect(coordinates.map(({ seq }) => seq).sort((a, b) => a - b)).toEqual([
+      1, 2, 3, 4,
+    ]);
+    expect(
+      coordinates
+        .map(({ hlc }) => `${hlc.wallTime}:${hlc.counter}`)
+        .sort(),
+    ).toEqual([
+      `${physicalTime}:0`,
+      `${physicalTime}:1`,
+      `${physicalTime}:2`,
+      `${physicalTime}:3`,
+    ]);
+  });
+
+  it("initializes allocator high-water marks from legacy events on upgrade", async () => {
+    const dbName = createDatabaseName("coordinate-legacy-upgrade");
+    const persistedWallTime = Date.parse("2026-07-11T04:00:00.000Z");
+    const legacyEvent = {
+      ...captureCreatedEvent,
+      eventId: "legacy-event",
+      deviceId: "device-legacy",
+      seq: 41,
+      hlc: { wallTime: persistedWallTime, counter: 7 },
+    } as const satisfies CaptureCreatedEvent;
+    const legacyDatabase = await openDB<LegacyLedgerDatabase>(dbName, 1, {
+      upgrade(database) {
+        database.createObjectStore("events", { keyPath: "eventId" });
+        database.createObjectStore("contexts", { keyPath: "hash" });
+      },
+    });
+    await legacyDatabase.put("events", legacyEvent);
+    legacyDatabase.close();
+
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+
+    await expect(
+      repository.reserveEventCoordinates(
+        "device-legacy",
+        Date.parse("2026-07-11T02:00:00.000Z"),
+        1,
+      ),
+    ).resolves.toEqual([
+      {
+        seq: 42,
+        hlc: { wallTime: persistedWallTime, counter: 8 },
+      },
+    ]);
+  });
+
+  it("raises allocator high-water marks after imported events and reopening", async () => {
+    const dbName = createDatabaseName("coordinate-import");
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    const physicalTime = Date.parse("2026-07-11T03:00:00.000Z");
+
+    await expect(
+      repository.reserveEventCoordinates("device-import", physicalTime, 1),
+    ).resolves.toEqual([
+      { seq: 1, hlc: { wallTime: physicalTime, counter: 0 } },
+    ]);
+
+    const importedWallTime = Date.parse("2026-07-11T05:00:00.000Z");
+    const importedEvent = {
+      ...captureCreatedEvent,
+      eventId: "imported-event",
+      deviceId: "device-import",
+      seq: 70,
+      hlc: { wallTime: importedWallTime, counter: 11 },
+    } as const satisfies CaptureCreatedEvent;
+    await repository.appendEvents([importedEvent]);
+    repository.close();
+    openRepositories.delete(repository);
+
+    const reopened = await openLedgerRepository({ dbName });
+    openRepositories.add(reopened);
+
+    await expect(
+      reopened.reserveEventCoordinates("device-import", physicalTime, 2),
+    ).resolves.toEqual([
+      { seq: 71, hlc: { wallTime: importedWallTime, counter: 12 } },
+      { seq: 72, hlc: { wallTime: importedWallTime, counter: 13 } },
+    ]);
+  });
+
+  it("raises high-water marks from the stored clone when caller data mutates", async () => {
+    const repository = await openTestRepository("coordinate-import-mutation");
+    const physicalTime = Date.parse("2026-07-11T03:00:00.000Z");
+    await repository.reserveEventCoordinates("device-import", physicalTime, 1);
+    const importedWallTime = Date.parse("2026-07-11T05:00:00.000Z");
+    const importedEvent = {
+      ...captureCreatedEvent,
+      eventId: "mutable-imported-event",
+      deviceId: "device-import",
+      seq: 50,
+      hlc: { wallTime: importedWallTime, counter: 9 },
+    } as CaptureCreatedEvent;
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ): IDBRequest<IDBValidKey> {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "eventId" in value &&
+        value.eventId === importedEvent.eventId
+      ) {
+        (importedEvent as { seq: number }).seq = 0;
+        (importedEvent as { hlc: { wallTime: number; counter: number } }).hlc = {
+          wallTime: physicalTime,
+          counter: 0,
+        };
+      }
+      return Reflect.apply(
+        originalPut,
+        this,
+        key === undefined ? [value] : [value, key],
+      ) as IDBRequest<IDBValidKey>;
+    };
+
+    try {
+      await repository.appendEvents([importedEvent]);
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
+
+    await expect(
+      repository.reserveEventCoordinates("device-import", physicalTime, 1),
+    ).resolves.toEqual([
+      { seq: 51, hlc: { wallTime: importedWallTime, counter: 10 } },
+    ]);
   });
 
   it("commits capture events and context together", async () => {
@@ -158,7 +330,7 @@ describe("openLedgerRepository", () => {
     });
   });
 
-  it("rolls back earlier writes when structured cloning fails mid-transaction", async () => {
+  it("rejects an unknown uncloneable field before issuing event writes", async () => {
     const repository = await openTestRepository("append-capture-rollback");
     const issuedEventIds: string[] = [];
     const originalPut = IDBObjectStore.prototype.put;
@@ -200,7 +372,7 @@ describe("openLedgerRepository", () => {
       IDBObjectStore.prototype.put = originalPut;
     }
 
-    expect(issuedEventIds).toContain(captureCreatedEvent.eventId);
+    expect(issuedEventIds).toEqual([]);
     expect(await repository.readSnapshot()).toEqual({
       events: [],
       contexts: [],
@@ -282,6 +454,7 @@ describe("openLedgerRepository", () => {
   it("treats an equal eventId replay as a no-op and rejects conflicting content", async () => {
     const repository = await openTestRepository("event-idempotency");
     const structurallyEqualReplay = {
+      schemaVersion: 1,
       payload: { captureType: "lookup" },
       contextHash: "sha256:context-1",
       captureId: "capture-1",
@@ -310,72 +483,15 @@ describe("openLedgerRepository", () => {
     });
   });
 
-  it("rejects a repeated eventId when cloneable non-record content differs", async () => {
-    const repository = await openTestRepository("event-date-conflict");
-    const storedEvent = {
-      ...itemCreatedEvent,
-      eventId: "event-with-date",
-      payload: {
-        ...itemCreatedEvent.payload,
-        observedDate: new Date("2026-07-11T00:20:00.000Z"),
-      },
-    } as unknown as Event;
-    const conflictingEvent = {
-      ...storedEvent,
-      payload: {
-        ...itemCreatedEvent.payload,
-        observedDate: new Date("2026-07-11T00:21:00.000Z"),
-      },
-    } as unknown as Event;
-    const equalReplay = {
-      ...storedEvent,
-      payload: {
-        ...itemCreatedEvent.payload,
-        observedDate: new Date("2026-07-11T00:20:00.000Z"),
-      },
-    } as unknown as Event;
-
-    await repository.appendEvents([storedEvent]);
-    await repository.appendEvents([equalReplay]);
-    await expect(repository.appendEvents([conflictingEvent])).rejects.toThrow(
-      /eventId/i,
-    );
-    expect(await repository.readSnapshot()).toEqual({
-      events: [storedEvent],
-      contexts: [],
-    });
-  });
-
-  it("accepts an equivalent RegExp replay for the same eventId", async () => {
-    const repository = await openTestRepository("event-regexp-replay");
-    const storedEvent = {
-      ...itemCreatedEvent,
-      eventId: "event-with-regexp",
-      payload: {
-        ...itemCreatedEvent.payload,
-        matcher: new RegExp("tenjin", "giu"),
-      },
-    } as unknown as Event;
-    const equalReplay = {
-      ...storedEvent,
-      payload: {
-        ...itemCreatedEvent.payload,
-        matcher: new RegExp("tenjin", "giu"),
-      },
-    } as unknown as Event;
-
-    await repository.appendEvents([storedEvent]);
-
-    await expect(
-      repository.appendEvents([equalReplay]),
-    ).resolves.toBeUndefined();
-    expect(await repository.readSnapshot()).toEqual({
-      events: [storedEvent],
-      contexts: [],
-    });
-  });
-
   it.each([
+    {
+      name: "Date",
+      createValue: () => new Date("2026-07-11T00:20:00.000Z"),
+    },
+    {
+      name: "RegExp",
+      createValue: () => new RegExp("tenjin", "giu"),
+    },
     {
       name: "Map",
       createValue: () => new Map([["tenjin", { count: 1 }]]),
@@ -397,85 +513,45 @@ describe("openLedgerRepository", () => {
       createValue: () =>
         new DataView(Uint8Array.from([0, 1, 2, 3]).buffer, 1, 2),
     },
-  ])("accepts an equivalent $name structured-clone value replay", async ({
+    {
+      name: "Blob",
+      createValue: () => new Blob(["tenjin"], { type: "text/plain" }),
+    },
+    {
+      name: "cyclic object",
+      createValue: () => {
+        const value: Record<string, unknown> = {};
+        value.self = value;
+        return value;
+      },
+    },
+    {
+      name: "sparse array",
+      createValue: () => {
+        const value = new Array<string | undefined>(2);
+        value[1] = "tenjin";
+        return value;
+      },
+    },
+  ])("rejects an unknown $name payload extension before writing", async ({
     name,
     createValue,
   }) => {
     const repository = await openTestRepository(`event-clone-${name}`);
-    const storedEvent = {
+    const eventWithPrivateExtension = {
       ...itemCreatedEvent,
       eventId: `event-with-${name}`,
       payload: {
         ...itemCreatedEvent.payload,
-        cloneValue: createValue(),
+        privateExtension: createValue(),
       },
     } as unknown as Event;
-    const equalReplay = {
-      ...storedEvent,
-      payload: {
-        ...itemCreatedEvent.payload,
-        cloneValue: createValue(),
-      },
-    } as unknown as Event;
-
-    await repository.appendEvents([storedEvent]);
 
     await expect(
-      repository.appendEvents([equalReplay]),
-    ).resolves.toBeUndefined();
-  });
-
-  it("accepts an equivalent cyclic event replay", async () => {
-    const repository = await openTestRepository("event-cyclic-replay");
-    const createCyclicPayload = (): Record<string, unknown> => {
-      const payload: Record<string, unknown> = {
-        ...itemCreatedEvent.payload,
-      };
-      payload.self = payload;
-      return payload;
-    };
-    const storedEvent = {
-      ...itemCreatedEvent,
-      eventId: "event-with-cycle",
-      payload: createCyclicPayload(),
-    } as unknown as Event;
-    const equalReplay = {
-      ...storedEvent,
-      payload: createCyclicPayload(),
-    } as unknown as Event;
-
-    await repository.appendEvents([storedEvent]);
-
-    await expect(repository.appendEvents([equalReplay])).resolves.toBeUndefined();
-  });
-
-  it("distinguishes a sparse array hole from an explicit undefined value", async () => {
-    const repository = await openTestRepository("event-sparse-array");
-    const sparseValues = new Array<string | undefined>(2);
-    sparseValues[1] = "tenjin";
-    const storedEvent = {
-      ...itemCreatedEvent,
-      eventId: "event-with-sparse-array",
-      payload: {
-        ...itemCreatedEvent.payload,
-        values: sparseValues,
-      },
-    } as unknown as Event;
-    const conflictingReplay = {
-      ...storedEvent,
-      payload: {
-        ...itemCreatedEvent.payload,
-        values: [undefined, "tenjin"],
-      },
-    } as unknown as Event;
-
-    await repository.appendEvents([storedEvent]);
-
-    await expect(repository.appendEvents([conflictingReplay])).rejects.toThrow(
-      /eventId/i,
-    );
+      repository.appendEvents([eventWithPrivateExtension]),
+    ).rejects.toThrow(/payload\.privateExtension.*not allowed/i);
     expect(await repository.readSnapshot()).toEqual({
-      events: [storedEvent],
+      events: [],
       contexts: [],
     });
   });
@@ -491,90 +567,6 @@ describe("openLedgerRepository", () => {
     ).rejects.toThrow();
     expect(await repository.readSnapshot()).toEqual({
       events: [itemCreatedEvent],
-      contexts: [],
-    });
-  });
-
-  it("accepts an equal Blob replay for the same eventId", async () => {
-    const repository = await openTestRepository("event-blob-replay");
-    const createEvent = (contents: string): Event =>
-      ({
-        ...itemCreatedEvent,
-        eventId: "event-with-blob",
-        payload: {
-          ...itemCreatedEvent.payload,
-          attachment: new Blob([contents], { type: "text/plain" }),
-        },
-      }) as unknown as Event;
-
-    await repository.appendEvents([createEvent("tenjin")]);
-
-    await expect(
-      repository.appendEvents([createEvent("tenjin")]),
-    ).resolves.toBeUndefined();
-  });
-
-  it("rejects a same-ID Blob replay with different bytes", async () => {
-    const repository = await openTestRepository("event-blob-conflict");
-    const createEvent = (contents: string): Event =>
-      ({
-        ...itemCreatedEvent,
-        eventId: "event-with-blob-conflict",
-        payload: {
-          ...itemCreatedEvent.payload,
-          attachment: new Blob([contents], { type: "text/plain" }),
-        },
-      }) as unknown as Event;
-    const storedEvent = createEvent("tenjin");
-
-    await repository.appendEvents([storedEvent]);
-
-    await expect(
-      repository.appendEvents([createEvent("TENJIN")]),
-    ).rejects.toThrow(/eventId/i);
-    const snapshot = await repository.readSnapshot();
-    const storedPayload = snapshot.events[0]?.payload as Record<string, unknown>;
-    expect(await (storedPayload.attachment as Blob).text()).toBe("tenjin");
-  });
-
-  it("rolls back earlier batch writes during delayed Blob conflict comparison", async () => {
-    const repository = await openTestRepository("event-blob-delayed-conflict");
-    const createBlobEvent = (contents: string): Event =>
-      ({
-        ...itemCreatedEvent,
-        eventId: "event-with-delayed-blob",
-        payload: {
-          ...itemCreatedEvent.payload,
-          attachment: new Blob([contents], { type: "text/plain" }),
-        },
-      }) as unknown as Event;
-    const newEvent = {
-      ...itemCreatedEvent,
-      eventId: "event-before-blob-conflict",
-      itemId: "item-before-blob-conflict",
-      seq: 5,
-    } as const satisfies ItemCreatedEvent;
-    const storedBlobEvent = createBlobEvent("tenjin");
-    await repository.appendEvents([storedBlobEvent]);
-
-    const originalArrayBuffer = Blob.prototype.arrayBuffer;
-    Blob.prototype.arrayBuffer = async function (): Promise<ArrayBuffer> {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      return originalArrayBuffer.call(this);
-    };
-    try {
-      await expect(
-        repository.appendEvents([
-          newEvent,
-          createBlobEvent("TENJIN"),
-        ]),
-      ).rejects.toThrow(/eventId/i);
-    } finally {
-      Blob.prototype.arrayBuffer = originalArrayBuffer;
-    }
-
-    expect(await repository.readSnapshot()).toEqual({
-      events: [storedBlobEvent],
       contexts: [],
     });
   });

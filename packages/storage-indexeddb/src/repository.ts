@@ -3,11 +3,13 @@ import {
   type CaptureCreatedEvent,
   type CaptureDiscardedEvent,
   type Event,
+  type HybridLogicalClock,
 } from "@tenjin/core";
 import {
   openDB,
   type DBSchema,
   type IDBPDatabase,
+  type IDBPObjectStore,
 } from "idb";
 
 export interface ContextRecord {
@@ -22,7 +24,17 @@ export interface LedgerSnapshot {
   readonly contexts: readonly ContextRecord[];
 }
 
+export interface EventCoordinate {
+  readonly seq: number;
+  readonly hlc: HybridLogicalClock;
+}
+
 export interface LedgerRepository {
+  reserveEventCoordinates(
+    deviceId: string,
+    physicalTime: number,
+    count: number,
+  ): Promise<readonly EventCoordinate[]>;
   appendCapture(
     events: readonly Event[],
     context: ContextRecord,
@@ -49,6 +61,31 @@ interface LedgerDatabase extends DBSchema {
     key: string;
     value: ContextRecord;
   };
+  clock: {
+    key: string;
+    value: AllocatorRecord;
+  };
+}
+
+interface GlobalClockRecord {
+  readonly key: "global-hlc";
+  readonly type: "global-hlc";
+  readonly hlc: HybridLogicalClock;
+}
+
+interface DeviceSequenceRecord {
+  readonly key: string;
+  readonly type: "device-sequence";
+  readonly deviceId: string;
+  readonly seq: number;
+}
+
+type AllocatorRecord = GlobalClockRecord | DeviceSequenceRecord;
+
+const GLOBAL_CLOCK_KEY = "global-hlc";
+
+function deviceSequenceKey(deviceId: string): string {
+  return `device-sequence:${deviceId}`;
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -118,6 +155,114 @@ function assertValidCapture(
       "capture_created contextHash must match the context hash",
     );
   }
+}
+
+function compareHlc(
+  left: HybridLogicalClock,
+  right: HybridLogicalClock,
+): number {
+  return left.wallTime - right.wallTime || left.counter - right.counter;
+}
+
+function maximumHlc(
+  left: HybridLogicalClock | undefined,
+  right: HybridLogicalClock,
+): HybridLogicalClock {
+  return left === undefined || compareHlc(right, left) > 0 ? right : left;
+}
+
+function highWaterFromEvents(
+  events: readonly Event[],
+  deviceId: string,
+): {
+  readonly seq: number;
+  readonly hlc: HybridLogicalClock | undefined;
+} {
+  let seq = 0;
+  let hlc: HybridLogicalClock | undefined;
+  for (const event of events) {
+    if (event.deviceId === deviceId) {
+      seq = Math.max(seq, event.seq);
+    }
+    hlc = maximumHlc(hlc, event.hlc);
+  }
+  return { seq, hlc };
+}
+
+type ReadwriteStore<Name extends "events" | "clock"> = IDBPObjectStore<
+  LedgerDatabase,
+  ArrayLike<"events" | "contexts" | "clock">,
+  Name,
+  "readwrite"
+>;
+
+async function promoteAllocatorHighWater(
+  eventStore: ReadwriteStore<"events">,
+  clockStore: ReadwriteStore<"clock">,
+  incomingEvents: readonly Event[],
+): Promise<void> {
+  const deviceIds = [...new Set(incomingEvents.map((event) => event.deviceId))];
+  const [storedGlobal, ...storedSequences] = await Promise.all([
+    clockStore.get(GLOBAL_CLOCK_KEY),
+    ...deviceIds.map((deviceId) =>
+      clockStore.get(deviceSequenceKey(deviceId)),
+    ),
+  ]);
+  const validGlobal =
+    storedGlobal?.type === "global-hlc" ? storedGlobal : undefined;
+  const sequences = new Map<string, number>();
+  let needsEventScan = validGlobal === undefined;
+  for (const [index, deviceId] of deviceIds.entries()) {
+    const stored = storedSequences[index];
+    if (
+      stored?.type === "device-sequence" &&
+      stored.deviceId === deviceId
+    ) {
+      sequences.set(deviceId, stored.seq);
+    } else {
+      needsEventScan = true;
+    }
+  }
+
+  let hlc = validGlobal?.hlc;
+  if (needsEventScan) {
+    const persistedEvents = await eventStore.getAll();
+    for (const event of persistedEvents) {
+      hlc = maximumHlc(hlc, event.hlc);
+      if (deviceIds.includes(event.deviceId)) {
+        sequences.set(
+          event.deviceId,
+          Math.max(sequences.get(event.deviceId) ?? 0, event.seq),
+        );
+      }
+    }
+  }
+
+  for (const event of incomingEvents) {
+    hlc = maximumHlc(hlc, event.hlc);
+    sequences.set(
+      event.deviceId,
+      Math.max(sequences.get(event.deviceId) ?? 0, event.seq),
+    );
+  }
+
+  if (hlc !== undefined) {
+    await clockStore.put({
+      key: GLOBAL_CLOCK_KEY,
+      type: "global-hlc",
+      hlc,
+    });
+  }
+  await Promise.all(
+    deviceIds.map((deviceId) =>
+      clockStore.put({
+        key: deviceSequenceKey(deviceId),
+        type: "device-sequence",
+        deviceId,
+        seq: sequences.get(deviceId) ?? 0,
+      }),
+    ),
+  );
 }
 
 async function equalEnumerableProperties(
@@ -428,6 +573,96 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     this.#database = database;
   }
 
+  async reserveEventCoordinates(
+    deviceId: string,
+    physicalTime: number,
+    count: number,
+  ): Promise<readonly EventCoordinate[]> {
+    const normalizedDeviceId = deviceId.trim();
+    if (normalizedDeviceId.length === 0) {
+      throw new TypeError("deviceId must be a non-empty string");
+    }
+    if (!Number.isSafeInteger(physicalTime) || physicalTime < 0) {
+      throw new TypeError("physicalTime must be a non-negative safe integer");
+    }
+    if (!Number.isSafeInteger(count) || count <= 0) {
+      throw new TypeError("count must be a positive safe integer");
+    }
+
+    const transaction = this.#database.transaction(
+      ["events", "clock"],
+      "readwrite",
+    );
+    try {
+      const eventStore = transaction.objectStore("events");
+      const clockStore = transaction.objectStore("clock");
+      const sequenceKey = deviceSequenceKey(normalizedDeviceId);
+      const [storedGlobal, storedSequence] = await Promise.all([
+        clockStore.get(GLOBAL_CLOCK_KEY),
+        clockStore.get(sequenceKey),
+      ]);
+      let hlc =
+        storedGlobal?.type === "global-hlc" ? storedGlobal.hlc : undefined;
+      let sequence =
+        storedSequence?.type === "device-sequence" &&
+        storedSequence.deviceId === normalizedDeviceId
+          ? storedSequence.seq
+          : undefined;
+
+      if (hlc === undefined || sequence === undefined) {
+        const persisted = highWaterFromEvents(
+          await eventStore.getAll(),
+          normalizedDeviceId,
+        );
+        hlc = hlc ?? persisted.hlc;
+        sequence = sequence ?? persisted.seq;
+      }
+
+      if (sequence > Number.MAX_SAFE_INTEGER - count) {
+        throw new RangeError("event sequence is exhausted");
+      }
+      const coordinates: EventCoordinate[] = [];
+      for (let index = 0; index < count; index += 1) {
+        sequence += 1;
+        if (hlc === undefined || physicalTime > hlc.wallTime) {
+          hlc = { wallTime: physicalTime, counter: 0 };
+        } else {
+          if (hlc.counter === Number.MAX_SAFE_INTEGER) {
+            throw new RangeError("hybrid logical clock counter is exhausted");
+          }
+          hlc = { wallTime: hlc.wallTime, counter: hlc.counter + 1 };
+        }
+        coordinates.push({ seq: sequence, hlc });
+      }
+
+      await clockStore.put({
+        key: sequenceKey,
+        type: "device-sequence",
+        deviceId: normalizedDeviceId,
+        seq: sequence,
+      });
+      await clockStore.put({
+        key: GLOBAL_CLOCK_KEY,
+        type: "global-hlc",
+        hlc: coordinates.at(-1)!.hlc,
+      });
+      await transaction.done;
+      return coordinates;
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {
+        // The transaction may already have aborted because a request failed.
+      }
+      try {
+        await transaction.done;
+      } catch {
+        // Preserve the operation error rather than the follow-up abort error.
+      }
+      throw error;
+    }
+  }
+
   async appendCapture(
     events: readonly Event[],
     context: ContextRecord,
@@ -435,7 +670,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     assertValidCapture(events, context);
 
     const transaction = this.#database.transaction(
-      ["events", "contexts"],
+      ["events", "contexts", "clock"],
       "readwrite",
     );
 
@@ -467,6 +702,11 @@ class IndexedDBLedgerRepository implements LedgerRepository {
       const storageContext = structuredClone(context);
       assertValidCapture(storageEvents, storageContext);
       await transaction.objectStore("contexts").put(storageContext);
+      await promoteAllocatorHighWater(
+        eventStore,
+        transaction.objectStore("clock"),
+        storageEvents,
+      );
       await transaction.done;
     } catch (error) {
       try {
@@ -491,12 +731,17 @@ class IndexedDBLedgerRepository implements LedgerRepository {
       assertValidEvent(event);
     }
 
-    const transaction = this.#database.transaction("events", "readwrite");
+    const transaction = this.#database.transaction(
+      ["events", "clock"],
+      "readwrite",
+    );
     try {
+      const storageEvents: Event[] = [];
       const eventStore = transaction.objectStore("events");
       for (const event of events) {
         const storageEvent = structuredClone(event);
         assertValidEvent(storageEvent);
+        storageEvents.push(storageEvent);
 
         const existing = await eventStore.get(storageEvent.eventId);
         if (existing !== undefined) {
@@ -515,6 +760,11 @@ class IndexedDBLedgerRepository implements LedgerRepository {
         }
         await eventStore.put(storageEvent);
       }
+      await promoteAllocatorHighWater(
+        eventStore,
+        transaction.objectStore("clock"),
+        storageEvents,
+      );
       await transaction.done;
     } catch (error) {
       try {
@@ -544,7 +794,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     assertValidEvent(event);
 
     const transaction = this.#database.transaction(
-      ["events", "contexts"],
+      ["events", "contexts", "clock"],
       "readwrite",
     );
 
@@ -587,6 +837,11 @@ class IndexedDBLedgerRepository implements LedgerRepository {
       if (!hasActiveContextReference) {
         await transaction.objectStore("contexts").delete(contextHash);
       }
+      await promoteAllocatorHighWater(
+        eventStore,
+        transaction.objectStore("clock"),
+        [storageEvent],
+      );
       await transaction.done;
     } catch (error) {
       try {
@@ -638,11 +893,16 @@ export async function openLedgerRepository(
 ): Promise<LedgerRepository> {
   const database = await openDB<LedgerDatabase>(
     options.dbName ?? "tenjin-ledger",
-    1,
+    2,
     {
-      upgrade(database) {
-        database.createObjectStore("events", { keyPath: "eventId" });
-        database.createObjectStore("contexts", { keyPath: "hash" });
+      upgrade(database, oldVersion) {
+        if (oldVersion < 1) {
+          database.createObjectStore("events", { keyPath: "eventId" });
+          database.createObjectStore("contexts", { keyPath: "hash" });
+        }
+        if (oldVersion < 2) {
+          database.createObjectStore("clock", { keyPath: "key" });
+        }
       },
     },
   );

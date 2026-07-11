@@ -1,10 +1,9 @@
 import {
   type CaptureDiscardedEvent,
-  type Event,
-  type HybridLogicalClock,
   type LearningChannel,
   type VerificationObservedEvent,
 } from "@tenjin/core";
+import type { EventCoordinate } from "@tenjin/storage-indexeddb";
 
 import {
   createCapture as buildCapture,
@@ -15,7 +14,11 @@ import {
 
 export interface LedgerRuntimeOptions {
   readonly deviceId: string;
-  readonly existingEvents: readonly Event[];
+  readonly reserveEventCoordinates: (
+    deviceId: string,
+    physicalTime: number,
+    count: number,
+  ) => Promise<readonly EventCoordinate[]>;
   readonly now: () => Date;
   readonly randomUUID: () => string;
   readonly digest: (text: string) => Promise<string>;
@@ -29,15 +32,8 @@ export interface LedgerRuntime {
     itemId: string,
     channel: LearningChannel,
     result: VerificationResult,
-  ): VerificationObservedEvent;
-  createDiscard(captureId: string): CaptureDiscardedEvent;
-}
-
-function compareHlc(
-  left: HybridLogicalClock,
-  right: HybridLogicalClock,
-): number {
-  return left.wallTime - right.wallTime || left.counter - right.counter;
+  ): Promise<VerificationObservedEvent>;
+  createDiscard(captureId: string): Promise<CaptureDiscardedEvent>;
 }
 
 export function createLedgerRuntime(
@@ -48,36 +44,11 @@ export function createLedgerRuntime(
     throw new TypeError("deviceId must be a non-empty string");
   }
 
-  let sequence = options.existingEvents.reduce(
-    (maximum, event) =>
-      event.deviceId === deviceId ? Math.max(maximum, event.seq) : maximum,
-    0,
-  );
-  let lastHlc = options.existingEvents.reduce<
-    HybridLogicalClock | undefined
-  >(
-    (maximum, event) =>
-      maximum === undefined || compareHlc(event.hlc, maximum) > 0
-        ? event.hlc
-        : maximum,
-    undefined,
-  );
-
-  function advance(physicalTime: number) {
-    sequence += 1;
-    if (lastHlc === undefined || physicalTime > lastHlc.wallTime) {
-      lastHlc = { wallTime: physicalTime, counter: 0 };
-    } else {
-      lastHlc = {
-        wallTime: lastHlc.wallTime,
-        counter: lastHlc.counter + 1,
-      };
-    }
-    return { seq: sequence, hlc: lastHlc };
-  }
-
-  function timestampedEventFields(timestamp: Date) {
-    const { seq, hlc } = advance(timestamp.getTime());
+  function timestampedEventFields(
+    timestamp: Date,
+    coordinate: EventCoordinate,
+  ) {
+    const { seq, hlc } = coordinate;
     const isoTimestamp = timestamp.toISOString();
     return {
       schemaVersion: 1 as const,
@@ -92,14 +63,16 @@ export function createLedgerRuntime(
     };
   }
 
-  function createCaptureDependencies(): CaptureDependencies {
-    let captureTime: Date | undefined;
+  function createCaptureDependencies(
+    captureTime: Date,
+    coordinates: readonly EventCoordinate[],
+  ): CaptureDependencies {
+    let coordinateIndex = 0;
     let issuedSequence: number | undefined;
 
     return {
       deviceId,
       now() {
-        captureTime = options.now();
         return captureTime;
       },
       nextId(prefix) {
@@ -112,8 +85,11 @@ export function createLedgerRuntime(
         return `${prefix}-${options.randomUUID()}`;
       },
       nextSequence() {
-        const timestamp = captureTime ?? options.now();
-        const next = advance(timestamp.getTime());
+        const next = coordinates[coordinateIndex];
+        if (next === undefined) {
+          throw new Error("capture emitted more events than reserved");
+        }
+        coordinateIndex += 1;
         issuedSequence = next.seq;
         return next;
       },
@@ -128,13 +104,42 @@ export function createLedgerRuntime(
     };
   }
 
+  async function reserve(timestamp: Date, count: number) {
+    const coordinates = await options.reserveEventCoordinates(
+      deviceId,
+      timestamp.getTime(),
+      count,
+    );
+    if (coordinates.length !== count) {
+      throw new Error(
+        `coordinate allocator returned ${coordinates.length}; expected ${count}`,
+      );
+    }
+    return coordinates;
+  }
+
   return {
-    createCapture(command) {
-      return buildCapture(command, createCaptureDependencies());
+    async createCapture(command) {
+      if (command.original.trim().length === 0) {
+        throw new TypeError("original must be a non-empty string");
+      }
+      const eventCount =
+        command.type === "production_correction" &&
+        !command.corrected?.trim()
+          ? 1
+          : 3;
+      const timestamp = options.now();
+      const coordinates = await reserve(timestamp, eventCount);
+      return buildCapture(
+        command,
+        createCaptureDependencies(timestamp, coordinates),
+      );
     },
-    createVerification(itemId, channel, result) {
+    async createVerification(itemId, channel, result) {
+      const timestamp = options.now();
+      const [coordinate] = await reserve(timestamp, 1);
       return {
-        ...timestampedEventFields(options.now()),
+        ...timestampedEventFields(timestamp, coordinate!),
         kind: "verification_observed",
         itemId,
         payload: {
@@ -145,9 +150,11 @@ export function createLedgerRuntime(
         },
       };
     },
-    createDiscard(captureId) {
+    async createDiscard(captureId) {
+      const timestamp = options.now();
+      const [coordinate] = await reserve(timestamp, 1);
       return {
-        ...timestampedEventFields(options.now()),
+        ...timestampedEventFields(timestamp, coordinate!),
         kind: "capture_discarded",
         captureId,
         payload: { reason: "undo" },
