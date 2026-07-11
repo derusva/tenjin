@@ -383,6 +383,44 @@ function structurallyEqual(left: unknown, right: unknown): Promise<boolean> {
   );
 }
 
+async function structurallyEqualWithTransactionKeepAlive(
+  left: unknown,
+  right: unknown,
+  requestKeepAlive: () => Promise<unknown>,
+): Promise<boolean> {
+  let keepAlive = true;
+  const keepAliveTask = (async () => {
+    while (keepAlive) {
+      await requestKeepAlive();
+    }
+  })();
+
+  let result = false;
+  let failed = false;
+  let failure: unknown;
+  try {
+    result = await structurallyEqual(left, right);
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+
+  keepAlive = false;
+  try {
+    await keepAliveTask;
+  } catch (error) {
+    if (!failed) {
+      failed = true;
+      failure = error;
+    }
+  }
+
+  if (failed) {
+    throw failure;
+  }
+  return result;
+}
+
 class IndexedDBLedgerRepository implements LedgerRepository {
   readonly #database: IDBPDatabase<LedgerDatabase>;
 
@@ -402,15 +440,22 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     );
 
     try {
-      const storageEvents = events.map((event) => structuredClone(event));
-      const storageContext = structuredClone(context);
-      assertValidCapture(storageEvents, storageContext);
-
+      const storageEvents: Event[] = [];
       const eventStore = transaction.objectStore("events");
-      for (const storageEvent of storageEvents) {
+      for (const event of events) {
+        const storageEvent = structuredClone(event);
+        assertValidEvent(storageEvent);
+        storageEvents.push(storageEvent);
+
         const existing = await eventStore.get(storageEvent.eventId);
         if (existing !== undefined) {
-          if (await structurallyEqual(existing, storageEvent)) {
+          if (
+            await structurallyEqualWithTransactionKeepAlive(
+              existing,
+              storageEvent,
+              () => eventStore.get(storageEvent.eventId),
+            )
+          ) {
             continue;
           }
           throw new Error(
@@ -419,6 +464,8 @@ class IndexedDBLedgerRepository implements LedgerRepository {
         }
         await eventStore.put(storageEvent);
       }
+      const storageContext = structuredClone(context);
+      assertValidCapture(storageEvents, storageContext);
       await transaction.objectStore("contexts").put(storageContext);
       await transaction.done;
     } catch (error) {
@@ -446,16 +493,20 @@ class IndexedDBLedgerRepository implements LedgerRepository {
 
     const transaction = this.#database.transaction("events", "readwrite");
     try {
-      const storageEvents = events.map((event) => structuredClone(event));
-      for (const storageEvent of storageEvents) {
-        assertValidEvent(storageEvent);
-      }
-
       const eventStore = transaction.objectStore("events");
-      for (const storageEvent of storageEvents) {
+      for (const event of events) {
+        const storageEvent = structuredClone(event);
+        assertValidEvent(storageEvent);
+
         const existing = await eventStore.get(storageEvent.eventId);
         if (existing !== undefined) {
-          if (await structurallyEqual(existing, storageEvent)) {
+          if (
+            await structurallyEqualWithTransactionKeepAlive(
+              existing,
+              storageEvent,
+              () => eventStore.get(storageEvent.eventId),
+            )
+          ) {
             continue;
           }
           throw new Error(
@@ -510,7 +561,13 @@ class IndexedDBLedgerRepository implements LedgerRepository {
       const existing = await eventStore.get(storageEvent.eventId);
       if (existing === undefined) {
         await eventStore.put(storageEvent);
-      } else if (!(await structurallyEqual(existing, storageEvent))) {
+      } else if (
+        !(await structurallyEqualWithTransactionKeepAlive(
+          existing,
+          storageEvent,
+          () => eventStore.get(storageEvent.eventId),
+        ))
+      ) {
         throw new Error(
           `eventId ${storageEvent.eventId} already exists with different content`,
         );

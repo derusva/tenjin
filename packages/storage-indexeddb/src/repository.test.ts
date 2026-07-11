@@ -160,6 +160,27 @@ describe("openLedgerRepository", () => {
 
   it("rolls back earlier writes when structured cloning fails mid-transaction", async () => {
     const repository = await openTestRepository("append-capture-rollback");
+    const issuedEventIds: string[] = [];
+    const originalPut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ): IDBRequest<IDBValidKey> {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "eventId" in value &&
+        typeof value.eventId === "string"
+      ) {
+        issuedEventIds.push(value.eventId);
+      }
+      return Reflect.apply(
+        originalPut,
+        this,
+        key === undefined ? [value] : [value, key],
+      ) as IDBRequest<IDBValidKey>;
+    };
     const uncloneableEvent = {
       ...itemCreatedEvent,
       payload: {
@@ -168,13 +189,18 @@ describe("openLedgerRepository", () => {
       },
     } as unknown as Event;
 
-    await expect(
-      repository.appendCapture(
-        [captureCreatedEvent, uncloneableEvent],
-        context,
-      ),
-    ).rejects.toThrow();
+    try {
+      await expect(
+        repository.appendCapture(
+          [captureCreatedEvent, uncloneableEvent],
+          context,
+        ),
+      ).rejects.toThrow();
+    } finally {
+      IDBObjectStore.prototype.put = originalPut;
+    }
 
+    expect(issuedEventIds).toContain(captureCreatedEvent.eventId);
     expect(await repository.readSnapshot()).toEqual({
       events: [],
       contexts: [],
@@ -509,6 +535,48 @@ describe("openLedgerRepository", () => {
     const snapshot = await repository.readSnapshot();
     const storedPayload = snapshot.events[0]?.payload as Record<string, unknown>;
     expect(await (storedPayload.attachment as Blob).text()).toBe("tenjin");
+  });
+
+  it("rolls back earlier batch writes during delayed Blob conflict comparison", async () => {
+    const repository = await openTestRepository("event-blob-delayed-conflict");
+    const createBlobEvent = (contents: string): Event =>
+      ({
+        ...itemCreatedEvent,
+        eventId: "event-with-delayed-blob",
+        payload: {
+          ...itemCreatedEvent.payload,
+          attachment: new Blob([contents], { type: "text/plain" }),
+        },
+      }) as unknown as Event;
+    const newEvent = {
+      ...itemCreatedEvent,
+      eventId: "event-before-blob-conflict",
+      itemId: "item-before-blob-conflict",
+      seq: 5,
+    } as const satisfies ItemCreatedEvent;
+    const storedBlobEvent = createBlobEvent("tenjin");
+    await repository.appendEvents([storedBlobEvent]);
+
+    const originalArrayBuffer = Blob.prototype.arrayBuffer;
+    Blob.prototype.arrayBuffer = async function (): Promise<ArrayBuffer> {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      return originalArrayBuffer.call(this);
+    };
+    try {
+      await expect(
+        repository.appendEvents([
+          newEvent,
+          createBlobEvent("TENJIN"),
+        ]),
+      ).rejects.toThrow(/eventId/i);
+    } finally {
+      Blob.prototype.arrayBuffer = originalArrayBuffer;
+    }
+
+    expect(await repository.readSnapshot()).toEqual({
+      events: [storedBlobEvent],
+      contexts: [],
+    });
   });
 
   it("appends event-only batches, accepts empty batches, and returns sorted events", async () => {
