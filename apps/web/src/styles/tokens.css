@@ -1,0 +1,23 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+
+  --paper: #f3efe6;
+  --page-backing: #e6e0d5;
+  --ink: #171a18;
+  --muted-ink: #676962;
+  --forest: #123f31;
+  --vermilion: #c9342b;
+  --hairline: #b7b2a8;
+  --soft-hairline: rgb(23 26 24 / 14%);
+  --heading-font: "Yu Mincho", "Hiragino Mincho ProN", "Noto Serif CJK JP", serif;
+  --ui-font: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --focus-width: 3px;
+  --focus-offset: 3px;
+  --tap-target: 44px;
+  --primary-radius: 6px;
+  --motion-duration: 160ms;
+  --motion-easing: ease-out;
+}

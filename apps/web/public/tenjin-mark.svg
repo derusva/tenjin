@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Tenjin</title>
+  <rect width="512" height="512" rx="56" fill="#123F31"/>
+  <path d="M126 82v348" fill="none" stroke="#C9342B" stroke-width="14"/>
+  <path d="M178 130h212M178 208h212M178 286h150M178 364h180" fill="none" stroke="#F3EFE6" stroke-linecap="square" stroke-width="18"/>
+  <circle cx="390" cy="364" r="22" fill="#C9342B"/>
+</svg>

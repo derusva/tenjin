@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { CaptureComposer } from "./CaptureComposer.js";
@@ -14,6 +15,14 @@ function createDeferred() {
 }
 
 describe("CaptureComposer", () => {
+  it("does not read the clock while rendering", () => {
+    const now = vi.spyOn(Date, "now");
+
+    renderToString(<CaptureComposer onSave={async () => undefined} />);
+
+    expect(now).not.toHaveBeenCalled();
+  });
+
   it("renders an accessible lookup composer and never submits an empty original", async () => {
     const user = userEvent.setup();
     const onSave = vi.fn(async () => undefined);

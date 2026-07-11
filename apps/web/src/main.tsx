@@ -1,8 +1,18 @@
 import { openLedgerRepository } from "@tenjin/storage-indexeddb";
 import { createRoot } from "react-dom/client";
+import { registerSW } from "virtual:pwa-register";
 
 import { App } from "./App.js";
+import { installRepositoryLifecycle } from "./app/repositoryLifecycle.js";
 import { createLedgerRuntime } from "./features/ledger/ledgerRuntime.js";
+import "./styles/tokens.css";
+import "./styles/app.css";
+
+registerSW({ immediate: true });
+
+if (navigator.storage?.persist !== undefined) {
+  void navigator.storage.persist().catch(() => false);
+}
 
 const DEVICE_ID_KEY = "tenjin.deviceId";
 
@@ -41,13 +51,10 @@ async function main(): Promise<void> {
     digest: digestSha256,
   });
 
-  window.addEventListener(
-    "pagehide",
-    () => {
-      repository.close();
-    },
-    { once: true },
-  );
+  const cleanupRepositoryLifecycle = installRepositoryLifecycle(window, () => {
+    cleanupRepositoryLifecycle();
+    repository.close();
+  });
 
   createRoot(rootElement).render(
     <App repository={repository} runtime={runtime} />,

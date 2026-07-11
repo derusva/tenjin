@@ -2,6 +2,14 @@ import type { ReviewItem } from "@tenjin/core";
 import type { LedgerRepository } from "@tenjin/storage-indexeddb";
 import { useEffect, useRef, useState } from "react";
 
+import {
+  ChevronRightIcon,
+  DataIcon,
+  RecordIcon,
+  ReviewIcon,
+  SearchIcon,
+  UndoIcon,
+} from "./components/icons.js";
 import { CaptureComposer } from "./features/capture/CaptureComposer.js";
 import type { CaptureCommand } from "./features/capture/createCapture.js";
 import type { LedgerRuntime } from "./features/ledger/ledgerRuntime.js";
@@ -19,11 +27,15 @@ export interface AppProps {
 
 type AppView = "record" | "review" | "search" | "data";
 
-const NAVIGATION: readonly { readonly view: AppView; readonly label: string }[] = [
-  { view: "record", label: "记录" },
-  { view: "review", label: "复习" },
-  { view: "search", label: "搜索" },
-  { view: "data", label: "数据" },
+const NAVIGATION: readonly {
+  readonly view: AppView;
+  readonly label: string;
+  readonly icon: typeof RecordIcon;
+}[] = [
+  { view: "record", label: "记录", icon: RecordIcon },
+  { view: "review", label: "复习", icon: ReviewIcon },
+  { view: "search", label: "搜索", icon: SearchIcon },
+  { view: "data", label: "数据", icon: DataIcon },
 ];
 
 const UNDO_WINDOW_MS = 8_000;
@@ -103,10 +115,16 @@ export function App({ repository, runtime }: AppProps) {
 
   let content;
   if (ledger.status === "loading") {
-    content = <p role="status">正在加载本地记录…</p>;
+    content = (
+      <section className="utility-view state-view">
+        <p role="status">正在加载本地记录…</p>
+      </section>
+    );
   } else if (ledger.status === "error") {
     content = (
-      <p role="alert">{ledger.error ?? "读取本地记录失败"}</p>
+      <section className="utility-view state-view">
+        <p role="alert">{ledger.error ?? "读取本地记录失败"}</p>
+      </section>
     );
   } else if (currentView === "review") {
     content = (
@@ -126,79 +144,91 @@ export function App({ repository, runtime }: AppProps) {
     );
   } else if (currentView === "data") {
     content = (
-      <section aria-labelledby="data-title">
+      <section className="utility-view data-view" aria-labelledby="data-title">
         <h1 id="data-title">数据</h1>
-        <p>本地事件 {ledger.snapshot.events.length}</p>
-        <p>本地上下文 {ledger.snapshot.contexts.length}</p>
-        <p>仅保存在此设备</p>
+        <div className="data-summary">
+          <p>本地事件 {ledger.snapshot.events.length}</p>
+          <p>本地上下文 {ledger.snapshot.contexts.length}</p>
+          <p>仅保存在此设备</p>
+        </div>
       </section>
     );
   } else {
     content = (
-      <>
-        <header>
-          <h1>Tenjin</h1>
-          <p>今天遇到了什么？</p>
+      <section className="record-view">
+        <header className="record-header">
+          <h1 className="wordmark">Tenjin</h1>
+          <p className="record-question">今天遇到了什么？</p>
         </header>
         <CaptureComposer onSave={saveCapture} />
-        <section aria-label="记录操作">
+        <section className="quick-actions" aria-label="记录操作">
           <button type="button" onClick={() => openView("review")}>
-            复习 5 条
+            <ReviewIcon aria-hidden="true" size={24} />
+            <span>复习 5 条</span>
           </button>
           <button type="button" onClick={() => openView("search")}>
-            搜索
+            <SearchIcon aria-hidden="true" size={24} />
+            <span>搜索</span>
           </button>
         </section>
-        <section aria-labelledby="recent-title">
-          <h2 id="recent-title">最近记录</h2>
+        <section className="recent-section" aria-labelledby="recent-title">
+          <div className="section-heading">
+            <h2 id="recent-title">最近记录</h2>
+          </div>
           {ledger.recentEntries.length === 0 ? (
-            <p>还没有记录</p>
+            <p className="empty-state">还没有记录</p>
           ) : (
-            <ul>
+            <ul className="recent-list">
               {ledger.recentEntries.map((entry) => (
                 <li key={entry.captureId}>
-                  <article>
-                    <h3>
-                      {entry.display ??
-                        entry.context.corrected ??
-                        entry.context.original}
-                    </h3>
-                    <p>{entry.context.original}</p>
-                    <time dateTime={entry.occurredAt}>{entry.occurredAt}</time>
+                  <article className="recent-row">
+                    <div className="recent-copy">
+                      <h3>
+                        {entry.display ??
+                          entry.context.corrected ??
+                          entry.context.original}
+                      </h3>
+                      <p>{entry.context.original}</p>
+                      <time dateTime={entry.occurredAt}>{entry.occurredAt}</time>
+                    </div>
+                    <ChevronRightIcon aria-hidden="true" size={22} />
                   </article>
                 </li>
               ))}
             </ul>
           )}
         </section>
-      </>
+      </section>
     );
   }
 
   return (
-    <>
-      <main>{content}</main>
+    <div className="app-shell">
+      <main className="app-main">{content}</main>
       {undoTarget === undefined ? null : (
-        <aside role="status" aria-live="polite">
+        <aside className="undo-toast" role="status" aria-live="polite">
           <span>已保存</span>
           <button type="button" disabled={undoing} onClick={undoCapture}>
-            撤销
+            <UndoIcon aria-hidden="true" size={18} />
+            <span>撤销</span>
           </button>
         </aside>
       )}
-      <nav aria-label="主要导航">
+      <nav className="bottom-nav" aria-label="主要导航">
         {NAVIGATION.map((item) => (
           <button
+            className="bottom-nav-item"
             key={item.view}
             type="button"
             disabled={item.view === "review" && ledger.status !== "ready"}
             aria-current={currentView === item.view ? "page" : undefined}
             onClick={() => openView(item.view)}
           >
-            {item.label}
+            <item.icon aria-hidden="true" size={24} />
+            <span>{item.label}</span>
           </button>
         ))}
       </nav>
-    </>
+    </div>
   );
 }

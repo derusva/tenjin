@@ -29,13 +29,14 @@ export function SearchView({ items, onBack }: SearchViewProps) {
     );
 
   return (
-    <section aria-labelledby="search-title">
-      <button type="button" onClick={onBack}>
+    <section className="utility-view search-view" aria-labelledby="search-title">
+      <button className="back-action" type="button" onClick={onBack}>
         返回记录
       </button>
       <h1 id="search-title">搜索</h1>
       <label htmlFor="ledger-search">搜索学习记录</label>
       <input
+        className="search-input"
         id="ledger-search"
         type="search"
         value={query}
@@ -43,14 +44,14 @@ export function SearchView({ items, onBack }: SearchViewProps) {
       />
 
       {results.length === 0 ? (
-        <p>没有找到相关记录</p>
+        <p className="empty-state">没有找到相关记录</p>
       ) : (
-        <ul>
+        <ul className="evidence-list">
           {results.map((item) => (
             <li key={item.itemId}>
               <article>
                 <h2>{item.display}</h2>
-                <div aria-label={`${item.display} 通道状态`}>
+                <div className="channel-state" aria-label={`${item.display} 通道状态`}>
                   {CHANNELS.filter(
                     (channel) => item.channels[channel].state !== "untracked",
                   ).map((channel) => (

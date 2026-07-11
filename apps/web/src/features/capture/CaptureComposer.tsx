@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 
 import {
+  CaptureIcon,
   ListeningMissIcon,
   LookupIcon,
   ProductionCorrectionIcon,
@@ -21,10 +22,10 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const captureStartedAt = useRef<number | undefined>(undefined);
   const mounted = useRef(true);
-  captureStartedAt.current ??= Date.now();
 
   useEffect(() => {
     mounted.current = true;
+    captureStartedAt.current = Date.now();
 
     return () => {
       mounted.current = false;
@@ -39,10 +40,11 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
       return;
     }
 
-    const captureDurationMs = Math.max(
-      0,
-      Date.now() - (captureStartedAt.current ?? Date.now()),
-    );
+    const submittedAt = Date.now();
+    const captureDurationMs =
+      captureStartedAt.current === undefined
+        ? 0
+        : Math.max(0, submittedAt - captureStartedAt.current);
     let command: CaptureCommand;
 
     if (captureType === "lookup") {
@@ -96,88 +98,102 @@ export function CaptureComposer({ onSave }: CaptureComposerProps) {
   const isSaving = saveStatus === "saving";
 
   return (
-    <form onSubmit={handleSubmit} aria-busy={isSaving}>
-      <fieldset disabled={isSaving}>
-        <legend>记录类型</legend>
-        <label>
-          <input
-            type="radio"
-            name="capture-type"
-            value="lookup"
-            checked={captureType === "lookup"}
-            onChange={() => {
-              setCaptureType("lookup");
-            }}
-          />
-          <LookupIcon aria-hidden="true" size={18} />
-          查过
+    <form
+      className="capture-composer"
+      onSubmit={handleSubmit}
+      aria-busy={isSaving}
+    >
+      <div className="capture-entry">
+        <label className="visually-hidden" htmlFor="capture-original">
+          遇到的词或表达
         </label>
-        <label>
-          <input
-            type="radio"
-            name="capture-type"
-            value="listening_miss"
-            checked={captureType === "listening_miss"}
-            onChange={() => {
-              setCaptureType("listening_miss");
-            }}
-          />
-          <ListeningMissIcon aria-hidden="true" size={18} />
-          没听出
-        </label>
-        <label>
-          <input
-            type="radio"
-            name="capture-type"
-            value="production_correction"
-            checked={captureType === "production_correction"}
-            onChange={() => {
-              setCaptureType("production_correction");
-            }}
-          />
-          <ProductionCorrectionIcon aria-hidden="true" size={18} />
-          表达纠正
-        </label>
-      </fieldset>
+        <textarea
+          className="capture-input"
+          id="capture-original"
+          rows={4}
+          value={original}
+          disabled={isSaving}
+          onChange={(event) => {
+            setOriginal(event.currentTarget.value);
+          }}
+        />
 
-      <label htmlFor="capture-original">遇到的词或表达</label>
-      <textarea
-        id="capture-original"
-        value={original}
-        disabled={isSaving}
-        onChange={(event) => {
-          setOriginal(event.currentTarget.value);
-        }}
-      />
+        <fieldset className="capture-types" disabled={isSaving}>
+          <legend className="visually-hidden">记录类型</legend>
+          <label className="capture-type">
+            <input
+              type="radio"
+              name="capture-type"
+              value="lookup"
+              checked={captureType === "lookup"}
+              onChange={() => {
+                setCaptureType("lookup");
+              }}
+            />
+            <LookupIcon aria-hidden="true" size={19} />
+            <span>查过</span>
+          </label>
+          <label className="capture-type">
+            <input
+              type="radio"
+              name="capture-type"
+              value="listening_miss"
+              checked={captureType === "listening_miss"}
+              onChange={() => {
+                setCaptureType("listening_miss");
+              }}
+            />
+            <ListeningMissIcon aria-hidden="true" size={19} />
+            <span>没听出</span>
+          </label>
+          <label className="capture-type">
+            <input
+              type="radio"
+              name="capture-type"
+              value="production_correction"
+              checked={captureType === "production_correction"}
+              onChange={() => {
+                setCaptureType("production_correction");
+              }}
+            />
+            <ProductionCorrectionIcon aria-hidden="true" size={19} />
+            <span>表达纠正</span>
+          </label>
+        </fieldset>
+      </div>
 
       {captureType === "production_correction" ? (
-        <>
+        <div className="capture-correction">
           <label htmlFor="capture-corrected">纠正后的表达</label>
           <textarea
+            className="capture-input capture-input-corrected"
             id="capture-corrected"
+            rows={2}
             value={corrected}
             disabled={isSaving}
             onChange={(event) => {
               setCorrected(event.currentTarget.value);
             }}
           />
-        </>
+        </div>
       ) : null}
 
       <button
+        className="primary-action"
         type="submit"
         disabled={isSaving || original.trim().length === 0}
       >
-        {isSaving ? "保存中…" : "记下来"}
+        <CaptureIcon aria-hidden="true" size={22} />
+        <span>{isSaving ? "保存中…" : "记下来"}</span>
       </button>
 
       {saveStatus === "success" ? (
-        <p role="status" aria-live="polite">
+        <p className="capture-feedback" role="status" aria-live="polite">
           已记下
         </p>
       ) : null}
       {saveStatus === "error" ? (
-        <p role="alert" aria-live="assertive">
+        <p className="capture-feedback capture-error" role="alert" aria-live="assertive">
           保存失败，请再试一次
         </p>
       ) : null}

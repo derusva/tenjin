@@ -8,10 +8,16 @@
     "test": "pnpm --recursive --if-present test",
     "typecheck": "pnpm --recursive --if-present typecheck",
     "build": "pnpm --recursive --if-present build",
-    "lint": "pnpm --recursive --if-present lint"
+    "lint": "eslint . --max-warnings 0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "globals": "^17.7.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.63.0",
     "vitest": "^3.2.4"
   }
 }

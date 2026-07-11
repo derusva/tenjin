@@ -1,5 +1,15 @@
 export {
+  ChartNoAxesColumn as DataIcon,
+  ChevronRight as ChevronRightIcon,
+  CircleCheck as AssessmentPassIcon,
+  CircleX as AssessmentFailIcon,
+  Clock3 as AssessmentHesitantIcon,
   BookOpen as LookupIcon,
+  BookOpen as ReviewIcon,
   Ear as ListeningMissIcon,
   MessageSquare as ProductionCorrectionIcon,
+  Pencil as CaptureIcon,
+  Pencil as RecordIcon,
+  Search as SearchIcon,
+  Undo2 as UndoIcon,
 } from "lucide-react";
