@@ -120,7 +120,63 @@ function assertValidCapture(
   }
 }
 
-function structurallyEqual(left: unknown, right: unknown): boolean {
+function equalEnumerableProperties(
+  left: object,
+  right: object,
+  leftToRight: WeakMap<object, object>,
+  rightToLeft: WeakMap<object, object>,
+): boolean {
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord).sort();
+  const rightKeys = Object.keys(rightRecord).sort();
+
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key, index) =>
+        key === rightKeys[index] &&
+        structurallyEqualValue(
+          leftRecord[key],
+          rightRecord[key],
+          leftToRight,
+          rightToLeft,
+        ),
+    )
+  );
+}
+
+function equalBufferBytes(
+  left: ArrayBufferLike,
+  right: ArrayBufferLike,
+): boolean {
+  const leftMetadata = left as ArrayBufferLike & {
+    readonly resizable?: boolean;
+    readonly maxByteLength?: number;
+  };
+  const rightMetadata = right as ArrayBufferLike & {
+    readonly resizable?: boolean;
+    readonly maxByteLength?: number;
+  };
+  if (
+    left.byteLength !== right.byteLength ||
+    leftMetadata.resizable !== rightMetadata.resizable ||
+    leftMetadata.maxByteLength !== rightMetadata.maxByteLength
+  ) {
+    return false;
+  }
+
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  return leftBytes.every((byte, index) => byte === rightBytes[index]);
+}
+
+function structurallyEqualValue(
+  left: unknown,
+  right: unknown,
+  leftToRight: WeakMap<object, object>,
+  rightToLeft: WeakMap<object, object>,
+): boolean {
   if (Object.is(left, right)) {
     return true;
   }
@@ -132,47 +188,166 @@ function structurallyEqual(left: unknown, right: unknown): boolean {
   ) {
     return false;
   }
+
+  const mappedRight = leftToRight.get(left);
+  if (mappedRight !== undefined) {
+    return mappedRight === right;
+  }
+  if (rightToLeft.has(right)) {
+    return false;
+  }
+
+  const leftTag = Object.prototype.toString.call(left);
+  const rightTag = Object.prototype.toString.call(right);
+  if (leftTag !== rightTag) {
+    return false;
+  }
+
+  leftToRight.set(left, right);
+  rightToLeft.set(right, left);
+
   if (Array.isArray(left) || Array.isArray(right)) {
     return (
       Array.isArray(left) &&
       Array.isArray(right) &&
       left.length === right.length &&
-      left.every((value, index) => structurallyEqual(value, right[index]))
-    );
-  }
-  if (left instanceof Date || right instanceof Date) {
-    return (
-      left instanceof Date &&
-      right instanceof Date &&
-      Object.is(left.getTime(), right.getTime())
+      equalEnumerableProperties(left, right, leftToRight, rightToLeft)
     );
   }
 
-  const leftPrototype = Object.getPrototypeOf(left);
-  const rightPrototype = Object.getPrototypeOf(right);
+  if (leftTag === "[object Date]") {
+    return Object.is(
+      (left as Date).getTime(),
+      (right as Date).getTime(),
+    );
+  }
+  if (leftTag === "[object RegExp]") {
+    const leftRegExp = left as RegExp;
+    const rightRegExp = right as RegExp;
+    return (
+      leftRegExp.source === rightRegExp.source &&
+      leftRegExp.flags === rightRegExp.flags
+    );
+  }
+  if (leftTag === "[object ArrayBuffer]") {
+    return equalBufferBytes(
+      left as ArrayBufferLike,
+      right as ArrayBufferLike,
+    );
+  }
+  if (leftTag === "[object SharedArrayBuffer]") {
+    return false;
+  }
+  if (ArrayBuffer.isView(left) || ArrayBuffer.isView(right)) {
+    if (!ArrayBuffer.isView(left) || !ArrayBuffer.isView(right)) {
+      return false;
+    }
+    return (
+      left.byteOffset === right.byteOffset &&
+      left.byteLength === right.byteLength &&
+      structurallyEqualValue(
+        left.buffer,
+        right.buffer,
+        leftToRight,
+        rightToLeft,
+      )
+    );
+  }
+  if (leftTag === "[object Map]") {
+    const leftEntries = [...(left as Map<unknown, unknown>).entries()];
+    const rightEntries = [...(right as Map<unknown, unknown>).entries()];
+    return (
+      leftEntries.length === rightEntries.length &&
+      leftEntries.every((entry, index) => {
+        const rightEntry = rightEntries[index];
+        return (
+          rightEntry !== undefined &&
+          structurallyEqualValue(
+            entry[0],
+            rightEntry[0],
+            leftToRight,
+            rightToLeft,
+          ) &&
+          structurallyEqualValue(
+            entry[1],
+            rightEntry[1],
+            leftToRight,
+            rightToLeft,
+          )
+        );
+      })
+    );
+  }
+  if (leftTag === "[object Set]") {
+    const leftValues = [...(left as Set<unknown>).values()];
+    const rightValues = [...(right as Set<unknown>).values()];
+    return (
+      leftValues.length === rightValues.length &&
+      leftValues.every((value, index) =>
+        structurallyEqualValue(
+          value,
+          rightValues[index],
+          leftToRight,
+          rightToLeft,
+        ),
+      )
+    );
+  }
   if (
-    (leftPrototype !== Object.prototype && leftPrototype !== null) ||
-    (rightPrototype !== Object.prototype && rightPrototype !== null)
+    leftTag === "[object Boolean]" ||
+    leftTag === "[object Number]" ||
+    leftTag === "[object String]" ||
+    leftTag === "[object BigInt]"
   ) {
+    return Object.is(
+      (left as { valueOf(): unknown }).valueOf(),
+      (right as { valueOf(): unknown }).valueOf(),
+    );
+  }
+  if (left instanceof Error && right instanceof Error) {
+    const leftHasCause = Object.hasOwn(left, "cause");
+    const rightHasCause = Object.hasOwn(right, "cause");
+    return (
+      left.name === right.name &&
+      left.message === right.message &&
+      leftHasCause === rightHasCause &&
+      (!leftHasCause ||
+        structurallyEqualValue(
+          left.cause,
+          right.cause,
+          leftToRight,
+          rightToLeft,
+        ))
+    );
+  }
+
+  if (leftTag !== "[object Object]") {
     return false;
   }
 
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord).sort();
-  const rightKeys = Object.keys(rightRecord).sort();
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key, index) =>
-        key === rightKeys[index] &&
-        structurallyEqual(leftRecord[key], rightRecord[key]),
-    )
+  return equalEnumerableProperties(
+    left,
+    right,
+    leftToRight,
+    rightToLeft,
+  );
+}
+
+function structurallyEqual(left: unknown, right: unknown): boolean {
+  return structurallyEqualValue(
+    left,
+    right,
+    new WeakMap<object, object>(),
+    new WeakMap<object, object>(),
   );
 }
 
 class IndexedDBLedgerRepository implements LedgerRepository {
-  constructor(private readonly database: IDBPDatabase<LedgerDatabase>) {}
+  readonly #database: IDBPDatabase<LedgerDatabase>;
+
+  constructor(database: IDBPDatabase<LedgerDatabase>) {
+    this.#database = database;
+  }
 
   async appendCapture(
     events: readonly Event[],
@@ -180,7 +355,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
   ): Promise<void> {
     assertValidCapture(events, context);
 
-    const transaction = this.database.transaction(
+    const transaction = this.#database.transaction(
       ["events", "contexts"],
       "readwrite",
     );
@@ -188,16 +363,17 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     try {
       const eventStore = transaction.objectStore("events");
       for (const event of events) {
-        const existing = await eventStore.get(event.eventId);
+        const storageEvent = structuredClone(event);
+        const existing = await eventStore.get(storageEvent.eventId);
         if (existing !== undefined) {
-          if (structurallyEqual(existing, event)) {
+          if (structurallyEqual(existing, storageEvent)) {
             continue;
           }
           throw new Error(
-            `eventId ${event.eventId} already exists with different content`,
+            `eventId ${storageEvent.eventId} already exists with different content`,
           );
         }
-        await eventStore.put(event);
+        await eventStore.put(storageEvent);
       }
       await transaction.objectStore("contexts").put(context);
       await transaction.done;
@@ -224,20 +400,21 @@ class IndexedDBLedgerRepository implements LedgerRepository {
       assertValidEvent(event);
     }
 
-    const transaction = this.database.transaction("events", "readwrite");
+    const transaction = this.#database.transaction("events", "readwrite");
     try {
       const eventStore = transaction.objectStore("events");
       for (const event of events) {
-        const existing = await eventStore.get(event.eventId);
+        const storageEvent = structuredClone(event);
+        const existing = await eventStore.get(storageEvent.eventId);
         if (existing !== undefined) {
-          if (structurallyEqual(existing, event)) {
+          if (structurallyEqual(existing, storageEvent)) {
             continue;
           }
           throw new Error(
-            `eventId ${event.eventId} already exists with different content`,
+            `eventId ${storageEvent.eventId} already exists with different content`,
           );
         }
-        await eventStore.put(event);
+        await eventStore.put(storageEvent);
       }
       await transaction.done;
     } catch (error) {
@@ -267,19 +444,20 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     }
     assertValidEvent(event);
 
-    const transaction = this.database.transaction(
+    const transaction = this.#database.transaction(
       ["events", "contexts"],
       "readwrite",
     );
 
     try {
       const eventStore = transaction.objectStore("events");
-      const existing = await eventStore.get(event.eventId);
+      const storageEvent = structuredClone(event);
+      const existing = await eventStore.get(storageEvent.eventId);
       if (existing === undefined) {
-        await eventStore.put(event);
-      } else if (!structurallyEqual(existing, event)) {
+        await eventStore.put(storageEvent);
+      } else if (!structurallyEqual(existing, storageEvent)) {
         throw new Error(
-          `eventId ${event.eventId} already exists with different content`,
+          `eventId ${storageEvent.eventId} already exists with different content`,
         );
       }
       await transaction.objectStore("contexts").delete(contextHash);
@@ -300,7 +478,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
   }
 
   async readSnapshot(): Promise<LedgerSnapshot> {
-    const transaction = this.database.transaction(
+    const transaction = this.#database.transaction(
       ["events", "contexts"],
       "readonly",
     );
@@ -325,7 +503,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
   }
 
   close(): void {
-    this.database.close();
+    this.#database.close();
   }
 }
 

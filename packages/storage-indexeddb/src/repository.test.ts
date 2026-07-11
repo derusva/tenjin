@@ -104,6 +104,23 @@ afterEach(async () => {
 });
 
 describe("openLedgerRepository", () => {
+  it("does not expose its IndexedDB database through own properties", async () => {
+    const repository = await openTestRepository("database-privacy");
+
+    const ownKeys = Reflect.ownKeys(repository);
+    const ownValues = ownKeys.map((key) => Reflect.get(repository, key));
+
+    expect(ownKeys).not.toContain("database");
+    expect(Reflect.get(repository, "database")).toBeUndefined();
+    expect(ownValues).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          transaction: expect.any(Function),
+        }),
+      ]),
+    );
+  });
+
   it("commits capture events and context together", async () => {
     const repository = await openTestRepository("append-capture");
 
@@ -112,6 +129,32 @@ describe("openLedgerRepository", () => {
     expect(await repository.readSnapshot()).toEqual({
       events: [captureCreatedEvent],
       contexts: [context],
+    });
+  });
+
+  it("sorts multiple contexts by hash regardless of insertion order", async () => {
+    const repository = await openTestRepository("context-sorting");
+    const earlierContext = {
+      hash: "sha256:context-0",
+      original: "earlier",
+      createdAt: "2026-07-11T00:19:00.000Z",
+    } as const satisfies ContextRecord;
+    const earlierCapture = {
+      ...captureCreatedEvent,
+      eventId: "event-capture-0",
+      seq: 4,
+      captureId: "capture-0",
+      contextHash: earlierContext.hash,
+      occurredAt: "2026-07-11T00:19:00.000Z",
+      recordedAt: "2026-07-11T00:19:01.000Z",
+    } as const satisfies CaptureCreatedEvent;
+
+    await repository.appendCapture([captureCreatedEvent], context);
+    await repository.appendCapture([earlierCapture], earlierContext);
+
+    expect(await repository.readSnapshot()).toEqual({
+      events: [earlierCapture, captureCreatedEvent],
+      contexts: [earlierContext, context],
     });
   });
 
@@ -277,6 +320,155 @@ describe("openLedgerRepository", () => {
     });
   });
 
+  it("accepts an equivalent RegExp replay for the same eventId", async () => {
+    const repository = await openTestRepository("event-regexp-replay");
+    const storedEvent = {
+      ...itemCreatedEvent,
+      eventId: "event-with-regexp",
+      payload: {
+        ...itemCreatedEvent.payload,
+        matcher: new RegExp("tenjin", "giu"),
+      },
+    } as unknown as Event;
+    const equalReplay = {
+      ...storedEvent,
+      payload: {
+        ...itemCreatedEvent.payload,
+        matcher: new RegExp("tenjin", "giu"),
+      },
+    } as unknown as Event;
+
+    await repository.appendEvents([storedEvent]);
+
+    await expect(
+      repository.appendEvents([equalReplay]),
+    ).resolves.toBeUndefined();
+    expect(await repository.readSnapshot()).toEqual({
+      events: [storedEvent],
+      contexts: [],
+    });
+  });
+
+  it.each([
+    {
+      name: "Map",
+      createValue: () => new Map([["tenjin", { count: 1 }]]),
+    },
+    {
+      name: "Set",
+      createValue: () => new Set(["tenjin", "天神"]),
+    },
+    {
+      name: "ArrayBuffer",
+      createValue: () => Uint8Array.from([1, 2, 3]).buffer,
+    },
+    {
+      name: "typed array",
+      createValue: () => Uint16Array.from([1, 65_535]),
+    },
+    {
+      name: "DataView",
+      createValue: () =>
+        new DataView(Uint8Array.from([0, 1, 2, 3]).buffer, 1, 2),
+    },
+  ])("accepts an equivalent $name structured-clone value replay", async ({
+    name,
+    createValue,
+  }) => {
+    const repository = await openTestRepository(`event-clone-${name}`);
+    const storedEvent = {
+      ...itemCreatedEvent,
+      eventId: `event-with-${name}`,
+      payload: {
+        ...itemCreatedEvent.payload,
+        cloneValue: createValue(),
+      },
+    } as unknown as Event;
+    const equalReplay = {
+      ...storedEvent,
+      payload: {
+        ...itemCreatedEvent.payload,
+        cloneValue: createValue(),
+      },
+    } as unknown as Event;
+
+    await repository.appendEvents([storedEvent]);
+
+    await expect(
+      repository.appendEvents([equalReplay]),
+    ).resolves.toBeUndefined();
+  });
+
+  it("accepts an equivalent cyclic event replay", async () => {
+    const repository = await openTestRepository("event-cyclic-replay");
+    const createCyclicPayload = (): Record<string, unknown> => {
+      const payload: Record<string, unknown> = {
+        ...itemCreatedEvent.payload,
+      };
+      payload.self = payload;
+      return payload;
+    };
+    const storedEvent = {
+      ...itemCreatedEvent,
+      eventId: "event-with-cycle",
+      payload: createCyclicPayload(),
+    } as unknown as Event;
+    const equalReplay = {
+      ...storedEvent,
+      payload: createCyclicPayload(),
+    } as unknown as Event;
+
+    await repository.appendEvents([storedEvent]);
+
+    await expect(repository.appendEvents([equalReplay])).resolves.toBeUndefined();
+  });
+
+  it("distinguishes a sparse array hole from an explicit undefined value", async () => {
+    const repository = await openTestRepository("event-sparse-array");
+    const sparseValues = new Array<string | undefined>(2);
+    sparseValues[1] = "tenjin";
+    const storedEvent = {
+      ...itemCreatedEvent,
+      eventId: "event-with-sparse-array",
+      payload: {
+        ...itemCreatedEvent.payload,
+        values: sparseValues,
+      },
+    } as unknown as Event;
+    const conflictingReplay = {
+      ...storedEvent,
+      payload: {
+        ...itemCreatedEvent.payload,
+        values: [undefined, "tenjin"],
+      },
+    } as unknown as Event;
+
+    await repository.appendEvents([storedEvent]);
+
+    await expect(repository.appendEvents([conflictingReplay])).rejects.toThrow(
+      /eventId/i,
+    );
+    expect(await repository.readSnapshot()).toEqual({
+      events: [storedEvent],
+      contexts: [],
+    });
+  });
+
+  it("rejects an uncloneable replay even when its visible content is equal", async () => {
+    const repository = await openTestRepository("event-uncloneable-replay");
+    const uncloneableReplay = new Proxy(itemCreatedEvent, {});
+
+    await repository.appendEvents([itemCreatedEvent]);
+
+    await expect(
+      repository.appendEvents([uncloneableReplay]),
+    ).rejects.toThrow();
+    expect(await repository.readSnapshot()).toEqual({
+      events: [itemCreatedEvent],
+      contexts: [],
+    });
+  });
+
   it("appends event-only batches, accepts empty batches, and returns sorted events", async () => {
     const repository = await openTestRepository("append-events");
 
@@ -315,6 +507,28 @@ describe("openLedgerRepository", () => {
     expect(await repository.readSnapshot()).toEqual({
       events: [captureCreatedEvent, captureDiscardedEvent],
       contexts: [],
+    });
+  });
+
+  it("preserves the context when a discard event write fails", async () => {
+    const repository = await openTestRepository("append-discard-rollback");
+    const uncloneableDiscard = {
+      ...captureDiscardedEvent,
+      eventId: "event-discard-uncloneable",
+      payload: {
+        ...captureDiscardedEvent.payload,
+        uncloneable: () => "functions cannot be cloned",
+      },
+    } as unknown as CaptureDiscardedEvent;
+    await repository.appendCapture([captureCreatedEvent], context);
+
+    await expect(
+      repository.appendDiscard(uncloneableDiscard, context.hash),
+    ).rejects.toThrow();
+
+    expect(await repository.readSnapshot()).toEqual({
+      events: [captureCreatedEvent],
+      contexts: [context],
     });
   });
 

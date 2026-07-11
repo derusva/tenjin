@@ -12,8 +12,11 @@
     }
   },
   "scripts": {
+    "pretest": "pnpm --filter @tenjin/core build",
     "test": "vitest run",
+    "pretypecheck": "pnpm --filter @tenjin/core build",
     "typecheck": "tsc --noEmit",
+    "prebuild": "pnpm --filter @tenjin/core build",
     "build": "tsc --project tsconfig.json"
   },
   "dependencies": {
