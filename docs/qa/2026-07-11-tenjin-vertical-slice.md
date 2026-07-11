@@ -5,13 +5,13 @@ Branch: `codex/tenjin-vertical-slice`
 
 ## Acceptance result
 
-PASS. Capture、复习、搜索、撤销、数据状态、PWA manifest 和断网重载均在真实浏览器中通过；控制台没有应用 warning/error。
+PASS. Capture、草稿保留、真实材料复习、搜索、撤销、数据状态、PWA manifest 和断网重载均在最终 production build 的真实浏览器中通过；控制台没有应用 warning/error。独立代码复审结论为 `APPROVED`，没有 Critical/Important 遗留。
 
 ## Method and environment
 
 - Surface: Codex in-app Browser using its Playwright-compatible controls.
 - App source: `pnpm build` 生成的 `apps/web/dist`，通过本地 production preview 加载。
-- Mobile viewport override: 390 × 844 CSS px。应用内浏览器在可滚动首页预留了 15px 原生滚动条，因此首页截图栅格为 375 × 812；无滚动的复习页为 390 × 844。
+- Mobile viewport override: 390 × 844 CSS px。应用内浏览器保留原生 chrome 与 15px 滚动条，最终两张手机截图栅格均为 375 × 812。
 - Desktop viewport override: 1280 × 900 CSS px；截图栅格为 1265 × 889，居中 paper shell 实测 760px。
 - 两张概念图与最终实现截图均以原始尺寸通过 `view_image` 检查。
 
@@ -20,11 +20,13 @@ PASS. Capture、复习、搜索、撤销、数据状态、PWA manifest 和断网
 | Check | Result | Evidence |
 | --- | --- | --- |
 | Capture and recent row | PASS | 分别写入 lookup、listening miss、production correction；最近记录显示 R/L/P、原文和时间，重载后仍在。 |
-| Review reveal and answer | PASS | 3 条会话完成 hesitant/pass/fail；揭示后焦点落到“记得”，回答后落到下一题标题，完成态焦点落到完成标题，live status 正确播报。 |
-| Search | PASS | 输入“念のため”后只剩目标项，并显示 `P unstable` 与证据数。 |
-| Undo | PASS | 新增“撤销成功”后在 8 秒内撤销；toast 消失，最近记录中不存在该项。 |
+| Draft retention | PASS | 输入未完成的 production original/correction，切到搜索再返回记录，两段草稿和记录类型均完整保留；保存后才清空。 |
+| Review reveal and answer | PASS | Lookup 因没有答案材料不进入队列；会话实际为 2 条 L/P。P 题先显示原句“話すです”，纠正版“話します”只在揭示后出现；hesitant/fail 写入后分别进入下一题与完成态，焦点和 live status 正确。 |
+| Search | PASS | 输入“話します”后只剩目标项，并显示 `P unstable` 与证据 2。 |
+| Undo | PASS | 新增“撤销重试验收”后在 8 秒内撤销；toast 消失，最近记录中不存在该项。 |
 | Data and persistence status | PASS | 数据页显示事件/上下文数量；本机返回“尽力保留”，并明确持久化不等于绝对安全。 |
-| PWA/offline shell | PASS | manifest 含 192/512/maskable 图标；停止 4173 preview 并确认端口不可达后，浏览器重载仍完整渲染首页和本机数据。 |
+| Failure/concurrency recovery | PASS | 自动化 deferred-write 回归覆盖首次/后续读取重试、复习保存重试、撤销失败重试、旧撤销不得污染新记录、写入中禁止重开会话或带走草稿；v1 数据库升级阻塞会显示可重试错误。 |
+| PWA/offline shell | PASS | manifest 含 192/512/maskable 图标；停止 4178 preview 并确认端口不可达后，浏览器重载仍完整渲染首页和本机数据。更新采用 waiting/prompt 模式，不会自动重载并丢弃内存草稿。 |
 | Console errors | PASS | 离线重载后读取 warning/error 日志为空。 |
 
 ## Visual fidelity ledger
@@ -62,7 +64,7 @@ Implementation screenshots:
 ### Intentional deviations
 
 - 复习概念使用虚构例句、先回想文本和详细笔记；竖切版没有伪造这些数据，只展示真实可导出的 item、通道、笔记空态和选择原因。
-- 概念的 `2 / 5` 与截图的 `1 / 3` 来自不同本机数据集；复习预算仍为最多 5 条。
+- 概念的 `2 / 5` 与截图的 `1 / 2` 来自不同本机数据集；实现只把有真实提示/答案材料的 L/P 项纳入队列，复习预算仍为最多 5 条。
 - 概念中的菜单/结束入口由当前固定底栏导航覆盖；完成后另有“结束本次”。
 - 首页概念能在一屏容纳三条极简记录；实现因显示原文与时间，在 390px 首屏看到两条并可继续滚动，这是为账本可核对性保留的差异。
 
@@ -70,7 +72,7 @@ Implementation screenshots:
 
 ## Command evidence
 
-- `pnpm test`: PASS，191/191（core 96、storage 38、web 57）。
+- `pnpm test`: PASS，245/245（core 129、storage 42、web 74）。
 - `pnpm typecheck`: PASS。
 - `pnpm lint`: PASS，0 warnings。
 - `pnpm build`: PASS；Vite 生成 production bundle，PWA `generateSW` 预缓存 11 项，并生成 `dist/sw.js` 与 Workbox runtime。
