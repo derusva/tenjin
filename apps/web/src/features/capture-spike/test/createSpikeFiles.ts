@@ -135,6 +135,15 @@ export function createSpikeFiles(
 export function createSelectedSpikeFiles(
   options: CreateSelectedSpikeFilesOptions = {},
 ): SpikeSelectedFilesFixture {
+  if (
+    options.manifestOverrides !== undefined &&
+    Object.prototype.hasOwnProperty.call(options.manifestOverrides, "payloads")
+  ) {
+    throw new TypeError(
+      "createSelectedSpikeFiles cannot override manifest payloads without matching fixture bytes",
+    );
+  }
+
   const fixture = createSpikeFiles(options);
   const packagePath =
     options.packagePath ??

@@ -175,6 +175,20 @@ describe("snapshotSelectedFiles", () => {
   });
 });
 
+describe("createSelectedSpikeFiles", () => {
+  it("rejects a payload manifest override that has no matching fixture bytes", () => {
+    expect(() =>
+      createSelectedSpikeFiles({
+        manifestOverrides: { payloads: [] },
+      }),
+    ).toThrowError(
+      new TypeError(
+        "createSelectedSpikeFiles cannot override manifest payloads without matching fixture bytes",
+      ),
+    );
+  });
+});
+
 describe("readCaptureLogSpikeDirectory package discovery", () => {
   it.each([1, 2, 3])(
     "reads %s complete packages selected through a month directory",
@@ -515,6 +529,79 @@ describe("readCaptureLogSpikeDirectory issue classification", () => {
       },
     ]);
     expect(result.packages).toEqual([]);
+  });
+
+  it("omits a package with a duplicate payload path without synthesizing payload-missing", async () => {
+    const ambiguous = packageFixture(1);
+    const unrelated = packageFixture(2);
+    const originalPayload = ambiguous.selectedFiles.find((selected) =>
+      selected.relativePath.endsWith("/payloads/01.txt"),
+    );
+    if (originalPayload === undefined) {
+      throw new Error("Expected the text payload fixture");
+    }
+    const duplicatePayload = createSelectedSpikeFile(
+      originalPayload.relativePath,
+      ambiguous.payloads[0]!.bytes,
+      "text/plain",
+    );
+
+    const result = await readCaptureLogSpikeDirectory(
+      [
+        ...ambiguous.selectedFiles,
+        duplicatePayload,
+        ...unrelated.selectedFiles,
+      ],
+      dependencies(),
+    );
+
+    expect(result.selectionIssues).toContainEqual({
+      disposition: "invalid-selection",
+      code: "duplicate-selected-relative-path",
+      relativePath: originalPayload.relativePath,
+      retryable: false,
+    });
+    expect(result.packages.map((pkg) => pkg.packagePath)).toEqual([
+      "2026-07/spike-20260712-164102-000-000002",
+    ]);
+    expect(result.packages[0]?.status).toBe("ready");
+    expect(result.packages).not.toContainEqual(
+      expect.objectContaining({
+        issues: expect.arrayContaining([
+          expect.objectContaining({ code: "payload-missing" }),
+        ]),
+      }),
+    );
+    expect(result.ignoredWithoutManifest).toEqual([]);
+  });
+
+  it("uses duplicate manifest presence to suppress a false unfinished package", async () => {
+    const fixture = packageFixture(1);
+    const manifest = fixture.selectedFiles.find((selected) =>
+      selected.relativePath.endsWith("/capture.json"),
+    );
+    if (manifest === undefined) {
+      throw new Error("Expected the manifest fixture");
+    }
+    const duplicateManifest = createSelectedSpikeFile(
+      manifest.relativePath,
+      fixture.captureJson,
+      "application/json",
+    );
+
+    const result = await readCaptureLogSpikeDirectory(
+      [...fixture.selectedFiles, duplicateManifest],
+      dependencies(),
+    );
+
+    expect(result.selectionIssues).toContainEqual({
+      disposition: "invalid-selection",
+      code: "duplicate-selected-relative-path",
+      relativePath: manifest.relativePath,
+      retryable: false,
+    });
+    expect(result.packages).toEqual([]);
+    expect(result.ignoredWithoutManifest).toEqual([]);
   });
 
   it("keeps a manifest provider failure retryable and distinct from invalid JSON", async () => {

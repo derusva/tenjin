@@ -451,9 +451,12 @@ export async function readCaptureLogSpikeDirectory(
   }
 
   const selectedByPath = new Map<string, SelectedSpikeFile>();
+  const presentPaths = new Set(groupedByPath.keys());
+  const duplicatePaths = new Set<string>();
   for (const relativePath of [...groupedByPath.keys()].sort()) {
     const selected = groupedByPath.get(relativePath)!;
     if (selected.length > 1) {
+      duplicatePaths.add(relativePath);
       selectionIssues.push(
         issue(
           "invalid-selection",
@@ -467,21 +470,29 @@ export async function readCaptureLogSpikeDirectory(
     }
   }
 
-  const allPackagePaths = [...selectedByPath.keys()]
-    .filter((relativePath) => {
-      const packagePath = inferPackagePath(relativePath);
-      return (
-        baseName(relativePath) === "capture.json" &&
-        packagePath !== undefined &&
-        parentPath(relativePath) === packagePath
-      );
-    })
-    .map(parentPath)
+  const manifestPackagePaths = new Set(
+    [...presentPaths]
+      .filter((relativePath) => {
+        const packagePath = inferPackagePath(relativePath);
+        return (
+          baseName(relativePath) === "capture.json" &&
+          packagePath !== undefined &&
+          parentPath(relativePath) === packagePath
+        );
+      })
+      .map(parentPath),
+  );
+  const ambiguousPackagePaths = new Set(
+    [...duplicatePaths]
+      .map(inferPackagePath)
+      .filter((packagePath): packagePath is string => packagePath !== undefined),
+  );
+  const allPackagePaths = [...manifestPackagePaths]
+    .filter((packagePath) => !ambiguousPackagePaths.has(packagePath))
     .sort();
-  const manifestPackagePaths = new Set(allPackagePaths);
 
   const ignoredWithoutManifest = new Set<string>();
-  for (const relativePath of selectedByPath.keys()) {
+  for (const relativePath of presentPaths) {
     const packagePath = inferPackagePath(relativePath);
     if (
       packagePath !== undefined &&
