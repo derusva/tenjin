@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "segments": {
+    "leadingWhitespace": {
+      "text": "  ",
+      "codePoints": ["U+20", "U+20"]
+    },
+    "trailingWhitespace": {
+      "text": "　　",
+      "codePoints": ["U+3000", "U+3000"]
+    },
+    "mixedScripts": {
+      "text": "漢字かなカナｶﾅＡＢＣ　終",
+      "codePoints": [
+        "U+6F22",
+        "U+5B57",
+        "U+304B",
+        "U+306A",
+        "U+30AB",
+        "U+30CA",
+        "U+FF76",
+        "U+FF85",
+        "U+FF21",
+        "U+FF22",
+        "U+FF23",
+        "U+3000",
+        "U+7D42"
+      ]
+    },
+    "supplementaryIdeograph": {
+      "text": "𠮷",
+      "codePoints": ["U+20BB7"]
+    },
+    "emojiZwj": {
+      "text": "👩‍💻",
+      "codePoints": ["U+1F469", "U+200D", "U+1F4BB"]
+    },
+    "precomposedGa": {
+      "text": "が",
+      "codePoints": ["U+304C"]
+    },
+    "decomposedGa": {
+      "text": "が",
+      "codePoints": ["U+304B", "U+3099"]
+    },
+    "japanesePunctuation": {
+      "text": "「引用」『二重』……、。？！",
+      "codePoints": [
+        "U+300C",
+        "U+5F15",
+        "U+7528",
+        "U+300D",
+        "U+300E",
+        "U+4E8C",
+        "U+91CD",
+        "U+300F",
+        "U+2026",
+        "U+2026",
+        "U+3001",
+        "U+3002",
+        "U+FF1F",
+        "U+FF01"
+      ]
+    },
+    "japanesePath": {
+      "text": "学習/日本語/資料.txt",
+      "codePoints": [
+        "U+5B66",
+        "U+7FD2",
+        "U+2F",
+        "U+65E5",
+        "U+672C",
+        "U+8A9E",
+        "U+2F",
+        "U+8CC7",
+        "U+6599",
+        "U+2E",
+        "U+74",
+        "U+78",
+        "U+74"
+      ]
+    },
+    "percentEncodedUrl": {
+      "text": "https://example.invalid/%E6%97%A5%E6%9C%AC%E8%AA%9E?q=%E3%81%8C",
+      "codePoints": [
+        "U+68",
+        "U+74",
+        "U+74",
+        "U+70",
+        "U+73",
+        "U+3A",
+        "U+2F",
+        "U+2F",
+        "U+65",
+        "U+78",
+        "U+61",
+        "U+6D",
+        "U+70",
+        "U+6C",
+        "U+65",
+        "U+2E",
+        "U+69",
+        "U+6E",
+        "U+76",
+        "U+61",
+        "U+6C",
+        "U+69",
+        "U+64",
+        "U+2F",
+        "U+25",
+        "U+45",
+        "U+36",
+        "U+25",
+        "U+39",
+        "U+37",
+        "U+25",
+        "U+41",
+        "U+35",
+        "U+25",
+        "U+45",
+        "U+36",
+        "U+25",
+        "U+39",
+        "U+43",
+        "U+25",
+        "U+41",
+        "U+43",
+        "U+25",
+        "U+45",
+        "U+38",
+        "U+25",
+        "U+41",
+        "U+41",
+        "U+25",
+        "U+39",
+        "U+45",
+        "U+3F",
+        "U+71",
+        "U+3D",
+        "U+25",
+        "U+45",
+        "U+33",
+        "U+25",
+        "U+38",
+        "U+31",
+        "U+25",
+        "U+38",
+        "U+43"
+      ]
+    }
+  }
+}

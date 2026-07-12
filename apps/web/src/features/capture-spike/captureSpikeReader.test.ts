@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import japaneseUnicodeText from "../../../../../fixtures/capture-spike/unicode/japanese-unicode.txt?raw";
+
 import {
   readCaptureLogSpikeDirectory,
   snapshotSelectedFiles,
@@ -940,6 +942,34 @@ describe("readCaptureLogSpikeDirectory issue classification", () => {
 });
 
 describe("readCaptureLogSpikeDirectory local diagnostics", () => {
+  it("round-trips the LF-only Unicode fixture without trimming or normalization", async () => {
+    expect(japaneseUnicodeText.startsWith("  Tenjin Unicode fixture\n")).toBe(
+      true,
+    );
+    expect(japaneseUnicodeText).toContain("\n\n");
+    expect(japaneseUnicodeText).not.toContain("\r");
+    expect(japaneseUnicodeText.endsWith("末尾空白: preserved　　\n")).toBe(
+      true,
+    );
+
+    const payloadBytes = bytesFromText(japaneseUnicodeText);
+    const selected = packageSelection({
+      payloads: [oneTextPayload(payloadBytes)],
+    });
+
+    const result = await readCaptureLogSpikeDirectory(
+      selected,
+      dependencies(),
+    );
+
+    const pkg = readyPackage(result.packages[0]!);
+    expect(pkg.payloads[0]).toMatchObject({
+      kind: "text",
+      text: japaneseUnicodeText,
+      actualByteLength: payloadBytes.byteLength,
+    });
+  });
+
   it("reports deterministic byte length, digest, duration, and source match", async () => {
     const payloadBytes = bytesFromText("計測対象");
     const payload = oneTextPayload(payloadBytes, {

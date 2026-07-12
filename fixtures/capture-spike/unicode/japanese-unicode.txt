@@ -1,0 +1,10 @@
+  Tenjin Unicode fixture
+混合: 漢字かなカナｶﾅＡＢＣ　終
+補助面: 𠮷
+Emoji ZWJ: 👩‍💻
+正規化: が / が
+句読点: 「引用」『二重』……、。？！
+
+日本語パス: 学習/日本語/資料.txt
+URL: https://example.invalid/%E6%97%A5%E6%9C%AC%E8%AA%9E?q=%E3%81%8C
+末尾空白: preserved　　

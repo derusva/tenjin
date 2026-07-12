@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import japaneseUnicodeCodepointsJson from "../../../../../fixtures/capture-spike/unicode/japanese-unicode.codepoints.json?raw";
+import japaneseUnicodeText from "../../../../../fixtures/capture-spike/unicode/japanese-unicode.txt?raw";
+
 import {
   parseCaptureSpikeManifestV0,
   type ParseCaptureSpikeManifestResult,
@@ -74,6 +77,71 @@ function inspectPng(bytes: ArrayBuffer): {
 
   return { complete: false, chunkTypes };
 }
+
+interface UnicodeSegmentFixture {
+  readonly text: string;
+  readonly codePoints: readonly string[];
+}
+
+interface UnicodeCodePointFixture {
+  readonly schemaVersion: 1;
+  readonly segments: Readonly<Record<string, UnicodeSegmentFixture>>;
+}
+
+function unicodeScalars(value: string): readonly string[] {
+  return Array.from(value, (scalar) =>
+    `U+${scalar.codePointAt(0)!.toString(16).toUpperCase()}`,
+  );
+}
+
+describe("Japanese Unicode fixture", () => {
+  const fixture = JSON.parse(
+    japaneseUnicodeCodepointsJson,
+  ) as UnicodeCodePointFixture;
+
+  it("pins every named segment to its Unicode scalar sequence", () => {
+    expect(fixture.schemaVersion).toBe(1);
+
+    for (const segment of Object.values(fixture.segments)) {
+      expect(japaneseUnicodeText).toContain(segment.text);
+      expect(unicodeScalars(segment.text)).toEqual(segment.codePoints);
+    }
+  });
+
+  it("keeps precomposed and decomposed ga distinct without losing equivalence", () => {
+    const precomposed = fixture.segments["precomposedGa"]!;
+    const decomposed = fixture.segments["decomposedGa"]!;
+
+    expect(precomposed.codePoints).toEqual(["U+304C"]);
+    expect(decomposed.codePoints).toEqual(["U+304B", "U+3099"]);
+    expect(precomposed.text).not.toBe(decomposed.text);
+    expect(precomposed.text.normalize("NFC")).toBe(
+      decomposed.text.normalize("NFC"),
+    );
+  });
+
+  it("keeps the supplementary ideograph and emoji ZWJ sequence intact", () => {
+    expect(fixture.segments["supplementaryIdeograph"]?.codePoints).toEqual([
+      "U+20BB7",
+    ]);
+    expect(fixture.segments["emojiZwj"]?.codePoints).toEqual([
+      "U+1F469",
+      "U+200D",
+      "U+1F4BB",
+    ]);
+  });
+
+  it("pins the leading and trailing whitespace scalars", () => {
+    expect(fixture.segments["leadingWhitespace"]?.codePoints).toEqual([
+      "U+20",
+      "U+20",
+    ]);
+    expect(fixture.segments["trailingWhitespace"]?.codePoints).toEqual([
+      "U+3000",
+      "U+3000",
+    ]);
+  });
+});
 
 describe("parseCaptureSpikeManifestV0", () => {
   it("parses the disposable v0 manifest and preserves payload order", () => {

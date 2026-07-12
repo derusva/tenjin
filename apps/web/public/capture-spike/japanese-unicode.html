@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tenjin Capture Spike — Unicode Test</title>
+    <style>
+      :root {
+        color: #18332b;
+        background: #f5f0e7;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+
+      body {
+        margin: 0 auto;
+        max-width: 48rem;
+        padding: 1.5rem;
+      }
+
+      section {
+        margin-block: 1rem;
+        padding: 1rem;
+        border: 1px solid #b7c3bc;
+        border-radius: 0.75rem;
+        background: #fffdf8;
+      }
+
+      pre,
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      textarea {
+        min-height: 12rem;
+      }
+
+      .selection-target {
+        font-size: 1.15rem;
+        line-height: 1.8;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Tenjin Capture Spike Unicode Test</h1>
+    <p>公開テストデータです。個人情報や実際の学習記録は含みません。</p>
+
+    <section id="plain-text">
+      <h2>Plain text</h2>
+      <p>次の欄を選択し、共有メニューからテキストとして送信します。</p>
+      <textarea readonly aria-label="Plain text test data">  Tenjin Unicode fixture
+混合: 漢字かなカナｶﾅＡＢＣ　終
+補助面: 𠮷
+Emoji ZWJ: 👩‍💻
+正規化: が / が
+句読点: 「引用」『二重』……、。？！
+
+日本語パス: 学習/日本語/資料.txt
+URL: https://example.invalid/%E6%97%A5%E6%9C%AC%E8%AA%9E?q=%E3%81%8C
+末尾空白: preserved　　</textarea>
+    </section>
+
+    <section id="rich-text">
+      <h2>Rich text</h2>
+      <article>
+        <p><strong>太字</strong>、<em>斜体</em>、<mark>強調</mark>を含む段落。</p>
+        <p><ruby>日本語<rp>(</rp><rt>にほんご</rt><rp>)</rp></ruby> — 漢字かなカナｶﾅＡＢＣ　終</p>
+        <ul>
+          <li>補助面: 𠮷</li>
+          <li>Emoji ZWJ: 👩‍💻</li>
+          <li>正規化: が / が</li>
+        </ul>
+      </article>
+    </section>
+
+    <section id="safari-selection">
+      <h2>Safari selection</h2>
+      <p class="selection-target">
+        この一文だけを選択して共有する。「引用」『二重』……、。？！
+      </p>
+    </section>
+
+    <section id="url">
+      <h2>URL</h2>
+      <p>リンクを長押しして URL として共有する。</p>
+      <a href="https://example.invalid/%E6%97%A5%E6%9C%AC%E8%AA%9E?q=%E3%81%8C">
+        https://example.invalid/%E6%97%A5%E6%9C%AC%E8%AA%9E?q=%E3%81%8C
+      </a>
+    </section>
+  </body>
+</html>
