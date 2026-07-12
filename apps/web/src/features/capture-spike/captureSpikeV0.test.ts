@@ -40,6 +40,41 @@ function expectIssue(
   );
 }
 
+function inspectPng(bytes: ArrayBuffer): {
+  readonly complete: boolean;
+  readonly chunkTypes: readonly string[];
+} {
+  const source = new Uint8Array(bytes);
+  const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+  if (!signature.every((byte, index) => source[index] === byte)) {
+    return { complete: false, chunkTypes: [] };
+  }
+
+  const view = new DataView(bytes);
+  const chunkTypes: string[] = [];
+  let offset = signature.length;
+  while (offset < source.byteLength) {
+    if (offset + 12 > source.byteLength) {
+      return { complete: false, chunkTypes };
+    }
+
+    const dataLength = view.getUint32(offset);
+    const chunkEnd = offset + 12 + dataLength;
+    if (chunkEnd > source.byteLength) {
+      return { complete: false, chunkTypes };
+    }
+
+    const type = String.fromCharCode(...source.slice(offset + 4, offset + 8));
+    chunkTypes.push(type);
+    offset = chunkEnd;
+    if (type === "IEND") {
+      return { complete: offset === source.byteLength, chunkTypes };
+    }
+  }
+
+  return { complete: false, chunkTypes };
+}
+
 describe("parseCaptureSpikeManifestV0", () => {
   it("parses the disposable v0 manifest and preserves payload order", () => {
     const fixture = createSpikeFiles();
@@ -58,6 +93,21 @@ describe("parseCaptureSpikeManifestV0", () => {
       "学習メモ.txt",
       "問題.png",
     ]);
+  });
+
+  it("provides a complete minimal PNG fixture with matching source length", () => {
+    const image = createSpikeFiles().payloads.find(
+      (payload) => payload.descriptor.previewKind === "image",
+    );
+    if (image === undefined) {
+      throw new Error("Expected the PNG fixture");
+    }
+
+    expect(inspectPng(image.bytes)).toEqual({
+      complete: true,
+      chunkTypes: ["IHDR", "IDAT", "IEND"],
+    });
+    expect(image.descriptor.sourceByteLength).toBe(image.bytes.byteLength);
   });
 
   it("accepts manifests without optional media observations", () => {
@@ -375,6 +425,9 @@ describe("parseCaptureSpikeManifestV0", () => {
   it.each([
     ["image/*", "image"],
     ["image/", "image"],
+    ["image/.", "image"],
+    ["image/+png", "image"],
+    ["image/png.", "image"],
     ["imageish/png", "image"],
     ["text/plainish", "text"],
     ["text/plain; charset", "text"],
@@ -397,20 +450,23 @@ describe("parseCaptureSpikeManifestV0", () => {
     );
   });
 
-  it("accepts a quoted legal charset parameter", () => {
-    const payload = {
-      payloadId: "payload-text-1",
-      inputIndex: 1,
-      observedType: "Text",
-      previewKind: "text",
-      path: "payloads/01.txt",
-      mediaType: 'text/plain; charset="utf-8"',
-    };
+  it.each(['"utf-8"', '"ISO_8859-1:1987"'])(
+    "accepts quoted legal charset parameter %s",
+    (charset) => {
+      const payload = {
+        payloadId: "payload-text-1",
+        inputIndex: 1,
+        observedType: "Text",
+        previewKind: "text",
+        path: "payloads/01.txt",
+        mediaType: `text/plain; charset=${charset}`,
+      };
 
-    expect(parseJson(withManifest({ payloads: [payload] }))).toMatchObject({
-      ok: true,
-    });
-  });
+      expect(parseJson(withManifest({ payloads: [payload] }))).toMatchObject({
+        ok: true,
+      });
+    },
+  );
 
   it.each(["mediaType", "originalName", "sourceByteLength"])(
     "rejects optional payload field %s when explicitly null",

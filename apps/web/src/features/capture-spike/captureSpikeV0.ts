@@ -59,7 +59,9 @@ const MAX_MANIFEST_BYTES = 256 * 1024;
 const CAPTURE_ID_PATTERN = /^spike-\d{8}-\d{6}-\d{3}-\d{6}$/;
 const SHARD_MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const TOKEN_PATTERN = /^[!#$&^_.+A-Za-z0-9-]+$/;
+const MEDIA_RESTRICTED_NAME_PATTERN =
+  /^[A-Za-z0-9](?:[!#$&^_.+A-Za-z0-9-]{0,125}[A-Za-z0-9])?$/;
+const CHARSET_TOKEN_PATTERN = /^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/;
 
 const MANIFEST_FIELDS = new Set([
   "schemaVersion",
@@ -178,13 +180,46 @@ function isSafePayloadPath(value: unknown): value is string {
   );
 }
 
+function isQuotedString(value: string): boolean {
+  if (
+    value.length < 3 ||
+    !value.startsWith('"') ||
+    !value.endsWith('"')
+  ) {
+    return false;
+  }
+
+  for (let index = 1; index < value.length - 1; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x5c) {
+      index += 1;
+      if (index >= value.length - 1) {
+        return false;
+      }
+      const escapedCode = value.charCodeAt(index);
+      if (escapedCode !== 0x09 && (escapedCode < 0x20 || escapedCode > 0x7e)) {
+        return false;
+      }
+    } else if (
+      code !== 0x09 &&
+      !(code >= 0x20 && code <= 0x21) &&
+      !(code >= 0x23 && code <= 0x5b) &&
+      !(code >= 0x5d && code <= 0x7e)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function mediaTypeBase(value: string): string | undefined {
   const [rawBase, ...parameters] = value.split(";");
   const baseParts = rawBase?.split("/") ?? [];
   if (
     baseParts.length !== 2 ||
-    !TOKEN_PATTERN.test(baseParts[0] ?? "") ||
-    !TOKEN_PATTERN.test(baseParts[1] ?? "")
+    !MEDIA_RESTRICTED_NAME_PATTERN.test(baseParts[0] ?? "") ||
+    !MEDIA_RESTRICTED_NAME_PATTERN.test(baseParts[1] ?? "")
   ) {
     return undefined;
   }
@@ -198,15 +233,9 @@ function mediaTypeBase(value: string): string | undefined {
     }
     const name = parameter.slice(0, equalsIndex);
     const parameterValue = parameter.slice(equalsIndex + 1);
-    const quotedValue =
-      parameterValue.length >= 2 &&
-      parameterValue.startsWith('"') &&
-      parameterValue.endsWith('"')
-        ? parameterValue.slice(1, -1)
-        : undefined;
     const validValue =
-      TOKEN_PATTERN.test(parameterValue) ||
-      (quotedValue !== undefined && TOKEN_PATTERN.test(quotedValue));
+      CHARSET_TOKEN_PATTERN.test(parameterValue) ||
+      isQuotedString(parameterValue);
     if (
       name.toLowerCase() !== "charset" ||
       hasCharset ||
