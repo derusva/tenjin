@@ -100,13 +100,13 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.every((byte, index) => byte === right[index]);
 }
 
-function isRealUtcTimestamp(value: unknown): value is string {
+function isRealRfc3339Timestamp(value: unknown): value is string {
   if (typeof value !== "string") {
     return false;
   }
 
   const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?Z$/.exec(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
       value,
     );
   if (match === null) {
@@ -119,12 +119,16 @@ function isRealUtcTimestamp(value: unknown): value is string {
   const hour = Number(match[4]);
   const minute = Number(match[5]);
   const second = Number(match[6]);
+  const offsetHour = match[7] === undefined ? 0 : Number(match[7]);
+  const offsetMinute = match[8] === undefined ? 0 : Number(match[8]);
   if (
     month < 1 ||
     month > 12 ||
     hour > 23 ||
     minute > 59 ||
-    second > 59
+    second > 59 ||
+    offsetHour > 23 ||
+    offsetMinute > 59
   ) {
     return false;
   }
@@ -336,7 +340,7 @@ export function parseCaptureSpikeManifestV0(
   ) {
     issues.push(issue("invalid-capture-id", "captureId"));
   }
-  if (!isRealUtcTimestamp(parsed.capturedAt)) {
+  if (!isRealRfc3339Timestamp(parsed.capturedAt)) {
     issues.push(issue("invalid-captured-at", "capturedAt"));
   }
   if (!isShardMonth(parsed.shardMonth)) {

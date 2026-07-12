@@ -314,12 +314,26 @@ describe("parseCaptureSpikeManifestV0", () => {
   });
 
   it.each([
-    "2026-07-12T08:41:00.000+00:00",
+    "2026-07-12T08:41:00.000Z",
+    "2026-07-13T00:30:00.000+08:00",
+    "2026-07-12T19:00:00.000-05:30",
+    "2026-07-12T08:41:00+00:00",
+  ])("accepts a real RFC 3339 capturedAt: %s", (capturedAt) => {
+    expect(parseJson(withManifest({ capturedAt }))).toMatchObject({
+      ok: true,
+    });
+  });
+
+  it.each([
     "2026-07-12T08:41:00.000",
     "2026-02-30T08:41:00.000Z",
     "2025-02-29T08:41:00.000Z",
     "2026-07-12T24:00:00.000Z",
-  ])("rejects a non-real RFC 3339 UTC capturedAt: %s", (capturedAt) => {
+    "2026-02-30T08:41:00.000+08:00",
+    "2026-07-12T08:41:00.000+24:00",
+    "2026-07-12T08:41:00.000+08:60",
+    "2026-07-12T08:41:00.000+0800",
+  ])("rejects a non-real RFC 3339 capturedAt: %s", (capturedAt) => {
     expectIssue(
       parseJson(withManifest({ capturedAt })),
       "invalid-captured-at",
