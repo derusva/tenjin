@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.
 
-**Goal:** 用可废弃的 schemaVersion: 0 证明 iPhone 分享菜单能够把文字、URL、单图和多图完整写入独立 iCloud 目录，并由 iOS 18.4 主屏 Tenjin PWA 重新选择目录、整包读回和安全预览。
+**Goal:** 用可废弃的 schemaVersion: 0 证明目标 iPhone（iOS 26）分享菜单能够把文字、URL、单图和多图完整写入独立 iCloud 目录，并由同一设备上的主屏 Tenjin PWA 重新选择目录、整包读回和安全预览；本阶段不声称旧版 iOS 兼容。
 
 **Architecture:** 阶段 A 使用独立的 CaptureLogSpike 目录、独立 Vite HTML 入口和只读文件解析模块。诊断入口的依赖树不导入 Tenjin repository、ledger runtime 或 storage persistence；它只接收用户当次选择的 FileList，在内存中验证 1–3 个 v0 包、计算本地 SHA-256 并渲染结果。iOS 快捷指令是一次性真机 spike，不是正式 Capture Package 生产者；所有真机事实记录到 QA 证据文件，不能由 jsdom 或桌面模拟替代。
 
-**Tech Stack:** TypeScript 5、React 19、Vite 7、Vitest、Testing Library、Web Crypto、iOS 18.4 Shortcuts、iCloud Drive、GitHub Pages。
+**Tech Stack:** TypeScript 5、React 19、Vite 7、Vitest、Testing Library、Web Crypto、iOS 26 Shortcuts、iCloud Drive、GitHub Pages。
 
 ## Global Constraints
 
@@ -865,9 +865,9 @@ sha256-ab.csv 固定列：
 
 **Stage A may be PASS only when:**
 
-- Safari、Photos、一个阅读器和 Files preview 都至少稳定交付一种有用表示。
+- Safari、Photos 和 Files preview 都至少稳定交付一种有用表示；至少一个用户实际使用的阅读器必须留下真实样本。若该阅读器不暴露快捷指令入口，必须把“直接捕获”列入 v1 拒绝清单，并用“截图 → Photos → Tenjin”完成同一阅读场景的端到端回退验证；不要求安装用户不会使用的阅读器来制造通过。
 - 固定目录首次授权后不成为日常询问，强退和重启后仍成立。
-- iOS 18.4 主屏 PWA 能从月份目录读回完整 v0 包。
+- 目标 iOS 26 主屏 PWA 能从月份目录读回完整 v0 包。
 - manifest 已到而 payload 缺失或 File.arrayBuffer 抛 NotReadableError 时，两种可控注入都显示整包暂不可用且可重试；真实 iCloud placeholder 若平台允许诱发则结果一致，若无法诱发必须明确写“未观察到”，不能伪报 provider PASS。
 - 保存失败不显示成功，且无 capture.json 伪完成标记。
 - decision.md 能明确列出 v1 支持与拒绝类型。

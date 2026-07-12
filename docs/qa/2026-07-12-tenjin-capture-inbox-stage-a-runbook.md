@@ -153,7 +153,7 @@ Run the cases below in order. Record every real attempt, including absence of th
 | `CG-08` | one reading app actually used by the target user | useful representation or explicit absence/failure |
 | `CG-09` | PDF, video, and unknown file, if safely available | explicit rejection, no manifest, no success notification |
 
-Task 0 already observed that Apple Books did not expose this shortcut for selected text. That remains a real limitation; it does not satisfy the required “one actual reader” success case. Do not install an unrelated reader merely to manufacture a pass.
+Task 0 already observed that Apple Books did not expose this shortcut for selected text. Keep that as a real reader sample and put direct Apple Books capture in the v1 rejection list. The reader workflow can pass only if a Books screenshot is then captured through Photos and read back end to end; that proves the documented fallback, not direct Books support. Do not install an unrelated reader merely to manufacture a pass.
 
 For images, report only the final representation Shortcuts saved. Do not claim byte identity with the source Photos asset unless independently proven.
 
@@ -265,4 +265,4 @@ After all rows and screenshots have been reconciled:
 
 ## Stage A decision boundary
 
-Stage A cannot pass unless direct evidence covers Safari, Photos, a real reader, Files preview, stable fixed-directory behavior after force-quit/restart, complete iPhone PWA readback, failure without false manifest/success, and explicit support/rejection decisions by type. If a required item is `FAIL` or `UNVERIFIED`, the final decision is `NO-GO` or `BLOCKED`, not an automatic transition to Stage B.
+Stage A cannot pass unless direct evidence covers Safari, Photos, Files preview, and one real reading workflow; stable fixed-directory behavior after force-quit/restart; complete iPhone PWA readback; failure without false manifest/success; and explicit support/rejection decisions by type. A reading workflow may be either a useful direct reader representation or a documented reader screenshot → Photos fallback. A fallback PASS never counts as direct reader support. If a required item is `FAIL` or `UNVERIFIED`, the final decision is `NO-GO` or `BLOCKED`, not an automatic transition to Stage B.
