@@ -574,6 +574,44 @@ describe("App", () => {
     }
   });
 
+  it("keeps the bottom navigation unchanged and exposes the stage A diagnostic from data", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={harness.repository} runtime={harness.runtime} />,
+    );
+
+    try {
+      expect(
+        await screen.findByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      expect(
+        within(navigation)
+          .getAllByRole("button")
+          .map((button) => button.textContent),
+      ).toEqual(["记录", "复习", "搜索", "数据"]);
+      expect(within(navigation).queryByRole("link")).not.toBeInTheDocument();
+
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+
+      const diagnosticLink = screen.getByRole("link", {
+        name: "打开阶段 A 捕获诊断",
+      });
+      expect(
+        new URL(
+          diagnosticLink.getAttribute("href") ?? "",
+          window.location.href,
+        ).pathname,
+      ).toBe("/tenjin/capture-spike.html");
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
   it("keeps review disabled until the initial snapshot is ready", async () => {
     const harness = await createHarness();
     const seededCapture = await harness.runtime.createCapture({

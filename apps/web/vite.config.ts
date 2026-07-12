@@ -6,6 +6,14 @@ const PAGES_BASE = "/tenjin/";
 
 export default defineConfig({
   base: PAGES_BASE,
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        captureSpike: "capture-spike.html",
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({

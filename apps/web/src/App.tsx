@@ -293,6 +293,12 @@ export function App({
           <p>{STORAGE_PERSISTENCE_COPY[storagePersistence]}</p>
           <p>本地数据仍可能被浏览器或系统清理，持久化也不代表绝对安全。</p>
         </div>
+        <a
+          className="secondary-action"
+          href={import.meta.env.BASE_URL + "capture-spike.html"}
+        >
+          打开阶段 A 捕获诊断
+        </a>
       </section>
     );
   } else {
