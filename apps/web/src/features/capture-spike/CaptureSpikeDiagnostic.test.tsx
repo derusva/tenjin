@@ -156,12 +156,14 @@ describe("CaptureSpikeDiagnostic", () => {
   it("configures a directory picker and moves from the empty state through reading to a package result", async () => {
     const pending = deferred<SpikeDirectoryResult>();
     const inspect = vi.fn<Inspect>(() => pending.promise);
-    renderDiagnostic(inspect);
+    const view = renderDiagnostic(inspect);
 
     expect(screen.getByRole("heading", { name: "捕获链路诊断" })).toBeInTheDocument();
     expect(screen.getByText(/不会导入，也不会保存到 Tenjin/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "返回 Tenjin" })).toHaveAttribute("href", "../");
     expect(screen.getByText("尚未选择 CaptureLogSpike 月份目录")).toBeInTheDocument();
+    const announcement = screen.getByRole("status");
+    expect(announcement).toBeEmptyDOMElement();
 
     const input = screen.getByLabelText("选择 CaptureLogSpike 月份目录") as HTMLInputElement;
     expect(input).toHaveAttribute("type", "file");
@@ -171,6 +173,8 @@ describe("CaptureSpikeDiagnostic", () => {
     const selected = selection("first");
     choose(input, selected);
     expect(screen.getByRole("status")).toHaveTextContent("正在读取");
+    expect(screen.getByRole("status")).toBe(announcement);
+    expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(inspect).toHaveBeenCalledWith(
       [{ file: selected[0]!.file, relativePath: selected[0]!.relativePath }],
       readerDependencies,
@@ -178,10 +182,20 @@ describe("CaptureSpikeDiagnostic", () => {
 
     await act(async () => pending.resolve(directory([textReadyPackage("第一条")])))
     expect(await screen.findByText(CAPTURE_ID)).toBeInTheDocument();
-    expect(screen.getByText("第一条")).toBeInTheDocument();
+    const preview = screen.getByText("第一条");
+    expect(preview).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBe(announcement);
+    expect(announcement).toHaveTextContent("读取完成：1 个包");
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(preview.closest('[aria-live], [role="status"]')).toBeNull();
+    expect(
+      view.container
+        .querySelector(".capture-spike-results")
+        ?.querySelector('[aria-live], [role="status"], [role="alert"]'),
+    ).toBeNull();
   });
 
-  it("renders the complete ready metadata and preserves payload order", async () => {
+  it("renders the complete ready metadata, preserves payload order, and keeps captured URLs non-interactive", async () => {
     const url = "https://example.com/%E6%97%A5%E6%9C%AC%E8%AA%9E";
     const textDescriptor: CaptureSpikePayloadV0 = {
       payloadId: "text",
@@ -252,7 +266,10 @@ describe("CaptureSpikeDiagnostic", () => {
     expect(within(capture).getAllByText("未提供")).toHaveLength(2);
     expect(within(capture).getAllByText(SHA)).toHaveLength(2);
     expect(within(capture).getAllByText("与源端一致")).toHaveLength(2);
-    expect(within(capture).getByRole("link", { name: url })).toHaveAttribute("rel", "noopener noreferrer");
+    const urlPreview = [...capture.querySelectorAll("pre")].find(
+      (element) => element.textContent === url,
+    );
+    expect(urlPreview?.tagName).toBe("PRE");
   });
 
   it("replaces a ready package atomically with an unavailable package and keeps iCloud and local digest copy distinct", async () => {
@@ -306,7 +323,7 @@ describe("CaptureSpikeDiagnostic", () => {
     expect(digestAlert).not.toHaveTextContent("iCloud");
   });
 
-  it("renders text literally and only links single-line absolute HTTP or HTTPS URLs", async () => {
+  it("renders captured text and URLs literally as preformatted text", async () => {
     const unsafeUrl = "javascript:alert(1)\nhttps://example.com";
     const descriptors: readonly CaptureSpikePayloadV0[] = [
       { payloadId: "text", inputIndex: 1, observedType: "Text", previewKind: "text", path: "payloads/01.txt" },
@@ -332,7 +349,11 @@ describe("CaptureSpikeDiagnostic", () => {
       ),
     ).toBe(true);
     expect(view.container.querySelector("script")).toBeNull();
-    expect(view.container.querySelector('a[href^="javascript:"]')).toBeNull();
+    expect(
+      [...view.container.querySelectorAll("pre")].map(
+        (preview) => preview.textContent,
+      ),
+    ).toEqual(expect.arrayContaining([SCRIPT_TEXT, unsafeUrl]));
   });
 
   it("revokes image object URLs when loading a replacement and when unmounting", async () => {
@@ -422,6 +443,12 @@ describe("CaptureSpikeDiagnostic", () => {
     expect(screen.getByText(/没有提供相对路径/)).toBeInTheDocument();
     expect(screen.getByText(/忽略 1 个没有 capture.json/)).toBeInTheDocument();
     expect(screen.getByText(/已截断：还有 2 个包未读取/)).toBeInTheDocument();
+    expect(screen.getByRole("alert", { name: "目录选择诊断" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("alert", {
+        name: `2026-07/${CAPTURE_ID} 诊断`,
+      }),
+    ).toBeInTheDocument();
 
     choose(input, selection("permission"));
     const permissionAlert = await screen.findByRole("alert");
@@ -499,48 +526,11 @@ describe("CaptureSpikeDiagnostic", () => {
     renderDiagnostic(inspect);
     choose(screen.getByLabelText("选择 CaptureLogSpike 月份目录"), selection("digest"));
 
-    const alert = await screen.findByRole("alert");
+    const alert = await screen.findByRole("alert", {
+      name: `2026-07/${CAPTURE_ID} 诊断`,
+    });
     expect(alert).toHaveTextContent("本机摘要计算暂不可用，请重试");
     expect(alert).not.toHaveTextContent(/iCloud|文件权限/);
   });
 
-  it("does not link HTTP-looking URLs with leading or trailing whitespace", async () => {
-    const rawUrl = " https://example.com/path ";
-    const descriptor: CaptureSpikePayloadV0 = {
-      payloadId: "url",
-      inputIndex: 1,
-      observedType: "URL",
-      previewKind: "url",
-      path: "payloads/01.txt",
-    };
-    const inspect = vi.fn<Inspect>(async () =>
-      directory([
-        readyPackage({
-          descriptors: [descriptor],
-          payloads: [
-            {
-              kind: "url",
-              payloadId: "url",
-              inputIndex: 1,
-              observedType: "URL",
-              actualByteLength: rawUrl.length,
-              localSha256: SHA,
-              localHashDurationMs: 1,
-              rawUrl,
-            },
-          ],
-        }),
-      ]),
-    );
-    const view = renderDiagnostic(inspect);
-    choose(screen.getByLabelText("选择 CaptureLogSpike 月份目录"), selection("whitespace-url"));
-    await screen.findByText(CAPTURE_ID);
-
-    expect(view.container.querySelector(`a[href="${rawUrl.trim()}"]`)).toBeNull();
-    expect(
-      [...view.container.querySelectorAll("pre")].some(
-        (preview) => preview.textContent === rawUrl,
-      ),
-    ).toBe(true);
-  });
 });

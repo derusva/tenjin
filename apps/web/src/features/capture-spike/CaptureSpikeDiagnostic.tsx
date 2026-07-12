@@ -117,22 +117,6 @@ function IssueList({
   );
 }
 
-function isSafeExternalUrl(value: string): boolean {
-  if (
-    value.trim() !== value ||
-    value.includes("\n") ||
-    value.includes("\r")
-  ) {
-    return false;
-  }
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function CaptureImage({ file, inputIndex }: { readonly file: File; readonly inputIndex: number }) {
   const image = useRef<HTMLImageElement>(null);
 
@@ -186,13 +170,7 @@ function PayloadPreview({
         {payload.kind === "text" ? (
           <pre>{payload.text}</pre>
         ) : payload.kind === "url" ? (
-          isSafeExternalUrl(payload.rawUrl) ? (
-            <a href={payload.rawUrl} target="_blank" rel="noopener noreferrer">
-              {payload.rawUrl}
-            </a>
-          ) : (
-            <pre>{payload.rawUrl}</pre>
-          )
+          <pre>{payload.rawUrl}</pre>
         ) : (
           <CaptureImage file={payload.file} inputIndex={payload.inputIndex} />
         )}
@@ -266,13 +244,13 @@ function DiagnosticResult({ result }: { readonly result: SpikeDirectoryResult })
         </section>
       )}
       {result.ignoredWithoutManifest.length === 0 ? null : (
-        <aside className="capture-spike-notice" role="status">
+        <aside className="capture-spike-notice">
           忽略 {result.ignoredWithoutManifest.length} 个没有 capture.json 的目录：{" "}
           <span className="capture-spike-path">{result.ignoredWithoutManifest.join("、")}</span>
         </aside>
       )}
       {result.truncatedPackageCount === 0 ? null : (
-        <aside className="capture-spike-notice capture-spike-notice-accent" role="status">
+        <aside className="capture-spike-notice capture-spike-notice-accent">
           已截断：还有 {result.truncatedPackageCount} 个包未读取。请缩小测试目录后重试。
         </aside>
       )}
@@ -288,6 +266,23 @@ function DiagnosticResult({ result }: { readonly result: SpikeDirectoryResult })
       </div>
     </div>
   );
+}
+
+function announcementCopy(state: DiagnosticState): string {
+  if (state.kind === "idle") {
+    return "";
+  }
+  if (state.kind === "reading") {
+    return "正在读取 CaptureLogSpike。";
+  }
+  if (state.kind === "failed") {
+    return "读取失败，可以重新选择目录。";
+  }
+
+  const truncated = state.result.truncatedPackageCount;
+  return `读取完成：${state.result.packages.length} 个包${
+    truncated === 0 ? "。" : `，另有 ${truncated} 个包未读取。`
+  }`;
 }
 
 export function CaptureSpikeDiagnostic({
@@ -376,6 +371,12 @@ export function CaptureSpikeDiagnostic({
               onChange={selectDirectory}
             />
           </label>
+          <p
+            className="visually-hidden capture-spike-announcement"
+            role="status"
+          >
+            {announcementCopy(state)}
+          </p>
 
           <div className="capture-spike-workbench">
             {state.kind === "idle" ? (
@@ -384,7 +385,7 @@ export function CaptureSpikeDiagnostic({
               </div>
             ) : state.kind === "reading" ? (
               <div className="capture-spike-empty state-view">
-                <p role="status">正在读取 CaptureLogSpike…</p>
+                <p>正在读取 CaptureLogSpike…</p>
               </div>
             ) : state.kind === "failed" ? (
               <div className="capture-spike-empty state-view">

@@ -775,8 +775,7 @@ svg {
   text-decoration: none;
 }
 
-.capture-spike-back:focus-visible,
-.capture-spike-preview a:focus-visible {
+.capture-spike-back:focus-visible {
   outline: var(--focus-width) solid var(--forest);
   outline-offset: var(--focus-offset);
 }
@@ -1020,8 +1019,7 @@ svg {
   margin: 22px 12px 0;
 }
 
-.capture-spike-preview pre,
-.capture-spike-preview a {
+.capture-spike-preview pre {
   display: block;
   min-width: 0;
   margin: 0;
@@ -1035,12 +1033,6 @@ svg {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.capture-spike-preview a {
-  color: var(--forest);
-  font-family: var(--ui-font);
-  font-size: 0.78rem;
 }
 
 .capture-spike-image {
