@@ -42,12 +42,10 @@
 **Minimal probe:**
 
 1. 新建 Tenjin Capture Spike Probe，显示在 Share Sheet，输入先设为 Any。
-2. 在编辑器中一次性选择 iCloud Drive/Shortcuts/Tenjin/CaptureLogSpike 作为 Save File 根目录；这不是 Import Question 安装测试。
-3. Current Date 同时生成设备本地 YYYY-MM 和真正 UTC 的 ISO 时间；UTC 格式化动作必须把时区显式设为 UTC，禁止把本地时间直接追加 Z。
-4. Generate UUID。
-5. Get Type of Shortcut Input，并用 Show Result/Quick Look 显示系统报告类型。
-6. 把一次无敏感纯文本输入转成 UTF-8 文本，Save File 的 Ask Where to Save 关闭，Subpath 设为 <local month>/<UUID>/probe.txt。
-7. 保存成功后才 Show Notification。
+2. Save File 保持系统显示的 Shortcuts 根目录；这不是 Import Question 安装测试。
+3. Current Date 使用自定义格式 yyyy-MM/yyyyMMdd-HHmmss-SSS，生成本地动态路径片段。
+4. Get Type of Shortcut Input，并用 iOS 26 当前动作 Show Content 显示系统报告类型。
+5. 把一次无敏感纯文本输入转成 UTF-8 文本，Save File 的 Ask Where to Save 与 Overwrite If File Exists 都关闭；先验证固定 Subpath /Tenjin/CaptureLogSpike/probe.txt，再验证动态 Subpath /Tenjin/CaptureLogSpike/<month>/<timestamp>/probe.txt。
 
 - [ ] **Step 1: 确认 Apple 设备操作者**
 
@@ -55,19 +53,19 @@
 
 - [ ] **Step 2: 验证动态中间目录行为**
 
-  先测试 Save File 是否会创建 <month>/<UUID> 中间目录；若不会，再显式加入 Create Folder 创建月份目录与 capture 目录后重试。把真实可行动作流写入 feasibility-probe.md，后续 build sheet 必须采用该流。
+  先测试 Save File 是否会从 Shortcuts 根目录创建 /Tenjin/CaptureLogSpike/<month>/<timestamp> 中间目录；若不会，再显式加入 Create Folder 创建所需目录后重试。把真实可行动作流写入 feasibility-probe.md，后续 build sheet 必须采用该流。随机后缀不在本 probe 冒充已验证，留到 Task 6。
 
 - [ ] **Step 3: 快速查看真实输入类型**
 
-  各运行一次 Safari 选区、Safari URL、Photos 单图、目标阅读器的一项分享和 Files preview；只记录 Get Type/View Content Graph 的真实结果，不尝试在 probe 内泛化保存所有表示。
+  各运行一次 Safari 选区、Safari URL、Photos 单图、目标阅读器的一项分享和 Files preview；只记录 Get Type 并由 Show Content 显示的真实结果，不尝试在 probe 内泛化保存所有表示。
 
-- [ ] **Step 4: 验证 UTC/本地月界**
+- [ ] **Step 4: 记录 UTC/本地月界状态**
 
-  用临时固定 Date 动作构造本地月初 00:30 的样本；确认 capturedAt 对应前一个 UTC 日/月，而 shardMonth 仍是设备本地月份。若 Shortcuts 无法明确设置 UTC，停止并先修时间动作，不得产生假 Z。
+  若本次 probe 继续进行，则用临时固定 Date 动作构造本地月初 00:30 的样本；确认 capturedAt 对应前一个 UTC 日/月，而 shardMonth 仍是设备本地月份。若用户选择先结束手机验证，则在 feasibility-probe.md 标为 NOT YET VERIFIED，并把它保留为 Task 6 前的硬门；任何时候都不得把本地时间直接追加 Z。
 
 - [ ] **Step 5: 记录 GO/BLOCKED**
 
-  只有动态目录可写、至少一种输入类型可观察、时间语义正确并且操作者愿意完成一次后续 build 会话时才继续 Task 1。
+  动态目录可写、至少一种输入类型可观察且操作者愿意完成一次后续 build 会话时，可给出 GO-BROWSER，只允许继续不写 iCloud 的浏览器侧 Tasks 1–5。UTC、重启、placeholder、失败反馈或随机后缀任一未验证时，不得把 Task 0 写成整体 PASS，也不得通过 Task 6 或 Stage A。
 
 - [ ] **Step 6: 仅提交真实 probe 结论**
 
@@ -152,7 +150,7 @@
 - capture.json 最大 256 KB；必须是 fatal UTF-8 和单个 JSON object。
 - manifest、text 和 URL 都拒绝 UTF-8 BOM；解码后重新编码的字节必须与输入完全相同。
 - 只接受 schemaVersion 0、spikeBuild 1 和 transport ios-shortcut-spike。
-- captureId 必须是 UUID；capturedAt 必须是带 Z 的真实 RFC 3339 UTC 日历时间；shardMonth 必须是 01–12 月的 YYYY-MM。
+- captureId 必须匹配 v0 专用格式 spike-YYYYMMDD-HHmmss-SSS-NNNNNN；capturedAt 必须是带 Z 的真实 RFC 3339 UTC 日历时间；shardMonth 必须是 01–12 月的 YYYY-MM。该格式只服务可废弃 spike，不替代 v1 UUID。
 - v0 每个顶层 Share Sheet 输入只保存一个用于往返的表示；payloads 为 1–20 项，payloadId、path 和 inputIndex 各自唯一，inputIndex 是从 1 开始的安全整数。Content Graph 中的其他表示只写 QA，不伪装成已保存 payload。
 - path 必须是包内相对路径；拒绝绝对路径、反斜杠、NUL、空段、点段和 ..。
 - 顶层和每个 payload 都使用严格字段白名单；未知字段一律拒绝，等价于 additionalProperties: false。
@@ -168,9 +166,9 @@
 
   用 createSpikeFiles.ts 构造一个日文 text payload 和一个 PNG payload；断言 manifest 的 payload 数组顺序完整保留，且未知顶层字段、错误 schemaVersion 和空 payloads 被拒绝。
 
-- [ ] **Step 2: 写日期、UUID、路径和摘要约束的失败测试**
+- [ ] **Step 2: 写日期、v0 captureId、路径和摘要约束的失败测试**
 
-  覆盖非 UTC capturedAt、2 月 30 日、13 月 shardMonth、路径穿越、重复 payloadId、重复 path、重复 inputIndex、hashMode none 搭配 sourceSha256、sha256 缺 hash/duration、非 64 位 SHA、UTF-8 BOM。mediaType 缺失必须合法；URL 的 text/plain/text/uri-list 都合法；image 搭配 text/plain 必须拒绝。
+  覆盖非 UTC capturedAt、2 月 30 日、13 月 shardMonth、UUID 或缺位数等非法 v0 captureId、路径穿越、重复 payloadId、重复 path、重复 inputIndex、hashMode none 搭配 sourceSha256、sha256 缺 hash/duration、非 64 位 SHA、UTF-8 BOM。mediaType 缺失必须合法；URL 的 text/plain/text/uri-list 都合法；image 搭配 text/plain 必须拒绝。
 
 - [ ] **Step 3: 运行定点测试，确认因实现缺失而失败**
 
@@ -603,7 +601,7 @@ capture.json 必须最后写入，示例：
     {
       "schemaVersion": 0,
       "spikeBuild": 1,
-      "captureId": "11111111-1111-4111-8111-111111111111",
+      "captureId": "spike-20260712-123000-000-482731",
       "capturedAt": "2026-07-12T04:30:00.000Z",
       "shardMonth": "2026-07",
       "transport": "ios-shortcut-spike",
@@ -627,7 +625,7 @@ capture.json 必须最后写入，示例：
 - 显示在分享菜单。
 - 接收：Text、Rich Text、URLs、Safari Web Pages、Images、Files；其他类型在阶段 A 明确拒绝。
 - 无输入：Stop and Respond“没有收到可测试的内容”。
-- 阶段 A 在编辑器中一次性选择 CaptureLogSpike 根目录；本地作者运行不冒充 Import Question 安装证据。可用 Setup → Customise Shortcut 单独自检未来 Import Question 文案，但共享/重新导入安装验证属于阶段 B。
+- 阶段 A 沿用 Task 0 实测配置：Save File 保持 Shortcuts 根目录，Subpath 从 /Tenjin/CaptureLogSpike/ 开始；本地作者运行不冒充 Import Question 安装证据。可用 Setup → Customise Shortcut 单独自检未来 Import Question 文案，但共享/重新导入安装验证属于阶段 B。
 - sourceApp 默认省略；只有 Task 0/Content Graph 证明系统直接提供一个稳定来源身份变量时才接入，不能从测试清单反推。
 - 普通 If/失败分支使用 Stop and Output，并把输出方式设为 Respond；只有全部 payload 和 capture.json 保存成功后才显示“已写入测试包 <短 captureId>”。Stop and Respond 只用于 Shortcut Input 的“无输入”设置。
 - 不要求开发者账号，不使用 Xcode，不签原生 App。
@@ -635,8 +633,8 @@ capture.json 必须最后写入，示例：
 **Shortcut action sequence:**
 
 1. Current Date；一个 Format Date 明确把时区设为 UTC 后生成 capturedAt，另一个保留设备本地时区生成 shardMonth；禁止把本地格式化结果直接加 Z。
-2. Generate UUID，作为 captureId 和包目录名。
-3. 按 Task 0 真机已验证的动作显式创建/取得 <shardMonth>/<captureId> 目录；不得假定 Save File 会自动创建中间目录。
+2. 另一个 Format Date 以设备本地时区生成 yyyyMMdd-HHmmss-SSS；Random Number 使用 100000–999999；用 Text 组成 spike-<timestamp>-<random>，同时作为 v0 captureId 和包目录名。该方案只用于 spike，v1 仍使用 PRD 冻结的 UUID。
+3. 按 Task 0 真机验证结果，Save File 保持 Shortcuts 根目录，使用动态 Subpath /Tenjin/CaptureLogSpike/<shardMonth>/<captureId>/...，并关闭 Ask Where to Save 与 Overwrite If File Exists；测试设备只对这种完整 Subpath 证明会自动创建中间目录。若正式 build 会话行为不同，停止并记录差异，不得静默换协议。
 4. Repeat with Each Shortcut Input，Repeat Index 作为 inputIndex；v0 每个顶层输入只保存一个往返表示。
 5. Get Type of Repeat Item，原样记录 observedType。
 6. 对 Text/Rich Text 使用 Get Text from Input 得到 UTF-8 文本；对 URL/Safari Web Page 先显式取得 URL，再用 Get Text from Input 保存 URL 字符串；对 Image 保留设备交付文件。Files 只接受能明确归为上述文字、URL 或 image/* 的实际表示，PDF/视频/未知文件走 Stop and Output（Respond）并写 QA 拒绝记录。
@@ -649,6 +647,8 @@ capture.json 必须最后写入，示例：
 
 在 Apple 设备上若动作名称或 Content Graph 行为与 build sheet 不同，先把真实差异写入 QA，不得悄悄改 schema 或伪造字段。官方参考必须链接：
 
+- Apple Shortcuts 26 current action names: https://support.apple.com/125148
+- Apple Format Date: https://support.apple.com/guide/shortcuts/apd71b0ac246/ios
 - Apple Shortcuts input types: https://support.apple.com/guide/shortcuts/apd7644168e1/ios
 - Apple Add Import Questions: https://support.apple.com/guide/shortcuts/apdf330fd3a0/ios
 - Apple Repeat with Each: https://support.apple.com/guide/shortcuts/apdc11deb2c1/ios
@@ -719,7 +719,7 @@ Windows 不能生成或验证 iCloud Shortcut 分享链接，也不能证明 iOS
 
 - [ ] **Step 3: 在 Apple 设备创建 none 诊断快捷指令**
 
-  完整照 build sheet 创建一次；沿用 Task 0 已验证的根目录配置与动态建目录动作；不用开发者账号。首次正式运行可出现系统 Files 权限，第二次运行不得再要求日常选目录。若单独测试 Setup → Customise Shortcut，只能标为编辑器自检，不能写成真实共享安装通过。
+  完整照 build sheet 创建一次；沿用 Task 0 已验证的 Shortcuts 根目录和完整动态 Subpath；不用开发者账号。首次正式运行可出现系统 Files 权限，第二次运行不得再要求日常选目录。还要在同一秒内连续触发至少两次，确认 Random Number 产生六位后缀、captureId 符合 v0 格式、两个目录互不覆盖；这一步通过前随机后缀仍是 UNVERIFIED。若单独测试 Setup → Customise Shortcut，只能标为编辑器自检，不能写成真实共享安装通过。
 
 - [ ] **Step 4: 复制出 sha256 变体**
 
