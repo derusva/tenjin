@@ -19,8 +19,23 @@ export interface SpikeFilesFixture {
   readonly payloads: readonly SpikeFixturePayload[];
 }
 
+export interface SpikeSelectedFileFixture {
+  readonly file: File;
+  readonly relativePath: string;
+}
+
+export interface SpikeSelectedFilesFixture extends SpikeFilesFixture {
+  readonly selectedFiles: readonly SpikeSelectedFileFixture[];
+}
+
 export interface CreateSpikeFilesOptions {
   readonly manifestOverrides?: Readonly<Record<string, unknown>>;
+}
+
+export interface CreateSelectedSpikeFilesOptions extends CreateSpikeFilesOptions {
+  readonly packagePath?: string;
+  readonly includeManifest?: boolean;
+  readonly selectedPayloadIndexes?: readonly number[];
 }
 
 function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -29,6 +44,29 @@ function copyArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 
 export function encodeSpikeManifest(value: unknown): ArrayBuffer {
   return copyArrayBuffer(new TextEncoder().encode(JSON.stringify(value)));
+}
+
+export function createSelectedSpikeFile(
+  relativePath: string,
+  bytes: ArrayBuffer,
+  mediaType = "",
+): SpikeSelectedFileFixture {
+  const fileName = relativePath.split("/").at(-1) ?? "fixture.bin";
+  const source = copyArrayBuffer(new Uint8Array(bytes));
+  const file = new File([source], fileName, { type: mediaType });
+
+  Object.defineProperties(file, {
+    arrayBuffer: {
+      configurable: true,
+      value: async () => copyArrayBuffer(new Uint8Array(source)),
+    },
+    webkitRelativePath: {
+      configurable: true,
+      value: relativePath,
+    },
+  });
+
+  return { file, relativePath };
 }
 
 export function createSpikeFiles(
@@ -92,4 +130,42 @@ export function createSpikeFiles(
       },
     ],
   };
+}
+
+export function createSelectedSpikeFiles(
+  options: CreateSelectedSpikeFilesOptions = {},
+): SpikeSelectedFilesFixture {
+  const fixture = createSpikeFiles(options);
+  const packagePath =
+    options.packagePath ??
+    `${String(fixture.manifest.shardMonth)}/${String(fixture.manifest.captureId)}`;
+  const selectedPayloadIndexes =
+    options.selectedPayloadIndexes ?? fixture.payloads.map((_, index) => index);
+  const selectedFiles: SpikeSelectedFileFixture[] = [];
+
+  if (options.includeManifest !== false) {
+    selectedFiles.push(
+      createSelectedSpikeFile(
+        `${packagePath}/capture.json`,
+        fixture.captureJson,
+        "application/json",
+      ),
+    );
+  }
+
+  for (const index of selectedPayloadIndexes) {
+    const payload = fixture.payloads[index];
+    if (payload === undefined) {
+      throw new Error(`Unknown spike fixture payload index: ${index}`);
+    }
+    selectedFiles.push(
+      createSelectedSpikeFile(
+        `${packagePath}/${payload.descriptor.path}`,
+        payload.bytes,
+        payload.descriptor.mediaType ?? "",
+      ),
+    );
+  }
+
+  return { ...fixture, selectedFiles };
 }
