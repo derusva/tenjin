@@ -1,8 +1,8 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  readCaptureLogSpikeDirectory,
+  readCaptureDropDirectory,
   type CaptureSpikeReaderDependencies,
   type SelectedSpikeFile,
   type SpikeDirectoryResult,
@@ -16,7 +16,7 @@ import type {
 import { CaptureSpikeDiagnostic } from "./CaptureSpikeDiagnostic.js";
 import { createSelectedSpikeFile } from "./test/createSpikeFiles.js";
 
-type Inspect = typeof readCaptureLogSpikeDirectory;
+type Inspect = typeof readCaptureDropDirectory;
 type ReadyPackage = Extract<SpikePackageResult, { readonly status: "ready" }>;
 
 const SHA = "a".repeat(64);
@@ -152,27 +152,62 @@ function renderDiagnostic(inspect: Inspect) {
   );
 }
 
+function renderDefaultDiagnostic() {
+  return render(
+    <CaptureSpikeDiagnostic
+      ledgerHref="../"
+      readerDependencies={readerDependencies}
+    />,
+  );
+}
+
 describe("CaptureSpikeDiagnostic", () => {
+  it("uses the raw-drop reader by default and explains that the simplified shortcut works", async () => {
+    const selected = createSelectedSpikeFile(
+      "2026-07/20260714-001800-000/probe",
+      new TextEncoder().encode("辞書形のまま保存する").buffer as ArrayBuffer,
+    );
+    renderDefaultDiagnostic();
+
+    choose(screen.getByLabelText("选择 Tenjin 收件箱目录"), [selected]);
+
+    const capture = await screen.findByRole("article", {
+      name: "简化快捷指令可用",
+    });
+    expect(within(capture).getByText("辞書形のまま保存する")).toBeInTheDocument();
+    expect(within(capture).getByText("由 Tenjin 自动生成元数据")).toBeInTheDocument();
+    expect(within(capture).getByRole("heading", { name: "#01 · 文字" })).toBeInTheDocument();
+    expect(within(capture).queryByText("sourceApp")).not.toBeInTheDocument();
+    expect(within(capture).queryByText("hashMode")).not.toBeInTheDocument();
+    expect(within(capture).queryByText("本地 SHA-256")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/手机端不需要生成 capture.json/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/iCloud Drive → Shortcuts → Tenjin → CaptureLogSpike/),
+    ).toBeInTheDocument();
+  });
+
   it("configures a directory picker and moves from the empty state through reading to a package result", async () => {
     const pending = deferred<SpikeDirectoryResult>();
     const inspect = vi.fn<Inspect>(() => pending.promise);
     const view = renderDiagnostic(inspect);
 
-    expect(screen.getByRole("heading", { name: "捕获链路诊断" })).toBeInTheDocument();
-    expect(screen.getByText(/不会导入，也不会保存到 Tenjin/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "收件箱文件验证" })).toBeInTheDocument();
+    expect(screen.getByText(/不会上传、修改或删除 iCloud 文件/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "返回 Tenjin" })).toHaveAttribute("href", "../");
-    expect(screen.getByText("尚未选择 CaptureLogSpike 月份目录")).toBeInTheDocument();
+    expect(screen.getByText("尚未选择收件箱目录")).toBeInTheDocument();
     const announcement = screen.getByRole("status");
     expect(announcement).toBeEmptyDOMElement();
 
-    const input = screen.getByLabelText("选择 CaptureLogSpike 月份目录") as HTMLInputElement;
+    const input = screen.getByLabelText("选择 Tenjin 收件箱目录") as HTMLInputElement;
     expect(input).toHaveAttribute("type", "file");
     expect(input).toHaveAttribute("multiple");
     expect(input).toHaveAttribute("webkitdirectory", "");
 
     const selected = selection("first");
     choose(input, selected);
-    expect(screen.getByRole("status")).toHaveTextContent("正在读取");
+    expect(screen.getByRole("status")).toHaveTextContent("正在识别");
     expect(screen.getByRole("status")).toBe(announcement);
     expect(screen.getAllByRole("status")).toHaveLength(1);
     expect(inspect).toHaveBeenCalledWith(
@@ -251,7 +286,7 @@ describe("CaptureSpikeDiagnostic", () => {
     ]);
     const inspect = vi.fn<Inspect>(async () => result);
     renderDiagnostic(inspect);
-    choose(screen.getByLabelText("选择 CaptureLogSpike 月份目录"), selection("ready"));
+    choose(screen.getByLabelText("选择 Tenjin 收件箱目录"), selection("ready"));
 
     const capture = await screen.findByRole("article", { name: CAPTURE_ID });
     expect(within(capture).getByText(CAPTURED_AT)).toBeInTheDocument();
@@ -307,7 +342,7 @@ describe("CaptureSpikeDiagnostic", () => {
       .mockResolvedValueOnce(unavailable)
       .mockResolvedValueOnce(digestUnavailable);
     renderDiagnostic(inspect);
-    const input = screen.getByLabelText("选择 CaptureLogSpike 月份目录");
+    const input = screen.getByLabelText("选择 Tenjin 收件箱目录");
 
     choose(input, selection("first"));
     expect(await screen.findByText("不得泄漏的 sibling preview")).toBeInTheDocument();
@@ -340,7 +375,7 @@ describe("CaptureSpikeDiagnostic", () => {
     ]);
     const inspect = vi.fn<Inspect>(async () => result);
     const view = renderDiagnostic(inspect);
-    choose(screen.getByLabelText("选择 CaptureLogSpike 月份目录"), selection("unsafe"));
+    choose(screen.getByLabelText("选择 Tenjin 收件箱目录"), selection("unsafe"));
 
     expect(await screen.findByText(SCRIPT_TEXT)).toBeInTheDocument();
     expect(
@@ -377,15 +412,17 @@ describe("CaptureSpikeDiagnostic", () => {
 
     try {
       const view = renderDiagnostic(inspect);
-      const input = screen.getByLabelText("选择 CaptureLogSpike 月份目录");
+      const input = screen.getByLabelText("选择 Tenjin 收件箱目录");
       choose(input, selection("image-one"));
-      expect(await screen.findByRole("img", { name: "捕获图片 1" })).toHaveAttribute("src", "blob:first");
+      const firstImage = await screen.findByRole("img", { name: "捕获图片 1" });
+      await waitFor(() => expect(firstImage).toHaveAttribute("src", "blob:first"));
 
       choose(input, selection("image-two"));
       expect(screen.queryByRole("img", { name: "捕获图片 1" })).not.toBeInTheDocument();
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:first");
       await act(async () => secondPending.resolve(directory([imagePackage("spike-20260712-164101-000-482732", secondFile)])));
-      expect(await screen.findByRole("img", { name: "捕获图片 1" })).toHaveAttribute("src", "blob:second");
+      const secondImage = await screen.findByRole("img", { name: "捕获图片 1" });
+      await waitFor(() => expect(secondImage).toHaveAttribute("src", "blob:second"));
       view.unmount();
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:second");
     } finally {
@@ -401,7 +438,7 @@ describe("CaptureSpikeDiagnostic", () => {
     const second = deferred<SpikeDirectoryResult>();
     const inspect = vi.fn<Inspect>().mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
     renderDiagnostic(inspect);
-    const input = screen.getByLabelText("选择 CaptureLogSpike 月份目录") as HTMLInputElement;
+    const input = screen.getByLabelText("选择 Tenjin 收件箱目录") as HTMLInputElement;
     Object.defineProperty(input, "value", { configurable: true, writable: true, value: "selected" });
 
     choose(input, selection("slow-a"));
@@ -435,13 +472,13 @@ describe("CaptureSpikeDiagnostic", () => {
       .mockRejectedValueOnce(notAllowed)
       .mockRejectedValueOnce(cancelled);
     renderDiagnostic(inspect);
-    const input = screen.getByLabelText("选择 CaptureLogSpike 月份目录");
+    const input = screen.getByLabelText("选择 Tenjin 收件箱目录");
 
     choose(input, selection("invalid"));
     expect(await screen.findByText("manifest-invalid-json")).toBeInTheDocument();
     expect(screen.getByText(/capture.json 不是有效的 JSON/)).toBeInTheDocument();
     expect(screen.getByText(/没有提供相对路径/)).toBeInTheDocument();
-    expect(screen.getByText(/忽略 1 个没有 capture.json/)).toBeInTheDocument();
+    expect(screen.getByText(/保留 1 个尚未完成的旧测试目录/)).toBeInTheDocument();
     expect(screen.getByText(/已截断：还有 2 个包未读取/)).toBeInTheDocument();
     expect(screen.getByRole("alert", { name: "目录选择诊断" })).toBeInTheDocument();
     expect(
@@ -479,7 +516,7 @@ describe("CaptureSpikeDiagnostic", () => {
       })
       .mockRejectedValueOnce(hostile);
     renderDiagnostic(inspect);
-    const input = screen.getByLabelText("选择 CaptureLogSpike 月份目录");
+    const input = screen.getByLabelText("选择 Tenjin 收件箱目录");
 
     expect(() => choose(input, selection("sync-throw"))).not.toThrow();
     expect(await screen.findByRole("alert")).toHaveTextContent(/文件权限/);
@@ -495,7 +532,7 @@ describe("CaptureSpikeDiagnostic", () => {
     const second = textReadyPackage("second", "spike-20260712-164104-000-482735");
     const inspect = vi.fn<Inspect>(async () => directory([first, second]));
     const view = renderDiagnostic(inspect);
-    choose(screen.getByLabelText("选择 CaptureLogSpike 月份目录"), selection("ids"));
+    choose(screen.getByLabelText("选择 Tenjin 收件箱目录"), selection("ids"));
     await screen.findByText("first");
 
     const payloadHeadings = screen.getAllByRole("heading", { level: 3 });
@@ -524,7 +561,7 @@ describe("CaptureSpikeDiagnostic", () => {
     ]);
     const inspect = vi.fn<Inspect>(async () => result);
     renderDiagnostic(inspect);
-    choose(screen.getByLabelText("选择 CaptureLogSpike 月份目录"), selection("digest"));
+    choose(screen.getByLabelText("选择 Tenjin 收件箱目录"), selection("digest"));
 
     const alert = await screen.findByRole("alert", {
       name: `2026-07/${CAPTURE_ID} 诊断`,

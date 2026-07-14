@@ -1,5 +1,45 @@
 # Tenjin Capture Spike v0 — iOS 26 build sheet
 
+> **2026-07-14 设计纠正：停止手工搭建下面的 manifest 版本。**
+>
+> 真机使用已经证明，让用户在快捷指令里配置变量、循环、类型分支和 JSON 会直接破坏“轻量捕获”的产品目标。下面的完整 manifest 配方只保留为工程参考，不再是用户安装步骤。
+
+## 当前有效的轻量路径
+
+用户保留已经验证成功的两个动作即可：
+
+1. `Text`，内容只放蓝色的 `Shortcut Input`；
+2. `Save File`，输入使用上一步 `Text`，根目录为 `Shortcuts`，`Ask Where to Save` 与 `Overwrite If File Exists` 都关闭。
+
+`Save File` 的 Subpath 沿用真机已经成功创建的格式：
+
+```text
+/Tenjin/CaptureLogSpike/[Current Date]/probe
+```
+
+其中 `Current Date` 直接放在 Subpath 字段内，Custom 格式为：
+
+```text
+yyyy-MM/yyyyMMdd-HHmmss-SSS
+```
+
+系统生成的目录示例：
+
+```text
+iCloud Drive/Shortcuts/Tenjin/CaptureLogSpike/
+  2026-07/
+    20260714-001800-000/
+      probe
+```
+
+Tenjin 的诊断读取器会把这种时间戳目录识别成 raw capture，在浏览器内生成临时元数据，并继续执行 UTF-8 解码、本地 SHA-256 与预览。手机端不再生成 `capture.json`，也不需要 `Get Type`、`Set Variable`、`Repeat with Each`、`Dictionary` 或手写 JSON。
+
+当前已由真机和网页共同证明的是**选中文字捕获**。URL 与图片仍需分别做最短动作链的真机校准；在校准完成前，不得为了覆盖它们把下面的 manifest 配方重新交给用户手工搭建。
+
+---
+
+## 已停用的完整 manifest 方案（仅工程参考）
+
 ## Purpose and evidence boundary
 
 This sheet is the authoring recipe for the disposable Stage A shortcut. It is not evidence that the full shortcut has already been built, imported, or passed on an iPhone. Task 0 proved only the target-device items explicitly marked **D** below. Task 6 must record every remaining device-dependent result before the shortcut can count as a tested build.

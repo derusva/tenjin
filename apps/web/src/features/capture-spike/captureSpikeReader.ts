@@ -30,6 +30,8 @@ export type SpikeReadIssueCode =
   | "payload-missing"
   | "payload-read-unavailable"
   | "payload-invalid-utf8"
+  | "raw-file-too-large"
+  | "raw-package-too-large"
   | "source-byte-length-mismatch"
   | "source-digest-mismatch"
   | "local-digest-unavailable";
@@ -74,6 +76,7 @@ export type SpikePackageResult =
       readonly packagePath: string;
       readonly manifest: CaptureSpikeManifestV0;
       readonly payloads: readonly SpikePayloadPreview[];
+      readonly packageSource?: "raw";
     }
   | {
       readonly status: "temporarily-unavailable";
@@ -105,6 +108,15 @@ interface InvalidDecodedPayload {
 }
 
 const SHARD_MONTH_SEGMENT = /^\d{4}-\d{2}$/;
+const RAW_CAPTURE_DIRECTORY_SEGMENT = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})-(\d{3})$/;
+const RAW_IMAGE_MEDIA_TYPES = new Set([
+  "image/heic",
+  "image/heif",
+  "image/jpeg",
+  "image/png",
+]);
+const RAW_MAX_FILE_BYTES = 20 * 1024 * 1024;
+const RAW_MAX_PACKAGE_BYTES = 50 * 1024 * 1024;
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   if (left.byteLength !== right.byteLength) {
@@ -209,6 +221,364 @@ function invalidPackage(
 function packageShardMonth(packagePath: string): string | undefined {
   const segments = packagePath.split("/");
   return segments.at(-2);
+}
+
+function rawImageMediaType(file: File, bytes: ArrayBuffer): string | undefined {
+  const browserType = file.type.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+  if (RAW_IMAGE_MEDIA_TYPES.has(browserType)) {
+    return browserType;
+  }
+
+  const extension = file.name.split(".").at(-1)?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") {
+    return "image/jpeg";
+  }
+  if (extension === "png") {
+    return "image/png";
+  }
+  if (extension === "heic") {
+    return "image/heic";
+  }
+  if (extension === "heif") {
+    return "image/heif";
+  }
+
+  const source = new Uint8Array(bytes);
+  if (source[0] === 0xff && source[1] === 0xd8 && source[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (
+    source[0] === 0x89 &&
+    source[1] === 0x50 &&
+    source[2] === 0x4e &&
+    source[3] === 0x47 &&
+    source[4] === 0x0d &&
+    source[5] === 0x0a &&
+    source[6] === 0x1a &&
+    source[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  if (
+    source[4] === 0x66 &&
+    source[5] === 0x74 &&
+    source[6] === 0x79 &&
+    source[7] === 0x70
+  ) {
+    const brand = String.fromCharCode(...source.slice(8, 12));
+    if (["heic", "heix", "hevc", "hevx"].includes(brand)) {
+      return "image/heic";
+    }
+    if (["mif1", "msf1"].includes(brand)) {
+      return "image/heif";
+    }
+  }
+  return undefined;
+}
+
+function isHttpUrl(value: string): boolean {
+  const candidate = value.trim();
+  if (candidate.length === 0 || /\s/.test(candidate)) {
+    return false;
+  }
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function sixDigitPathHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return String((hash >>> 0) % 1_000_000).padStart(6, "0");
+}
+
+function padDatePart(value: number, width = 2): string {
+  return String(value).padStart(width, "0");
+}
+
+function rawCaptureId(packagePath: string, capturedAt: Date): string {
+  const directoryTimestamp = RAW_CAPTURE_DIRECTORY_SEGMENT.exec(
+    baseName(packagePath),
+  );
+  if (directoryTimestamp !== null) {
+    return `spike-${directoryTimestamp[1]}${directoryTimestamp[2]}${directoryTimestamp[3]}-${directoryTimestamp[4]}${directoryTimestamp[5]}${directoryTimestamp[6]}-${directoryTimestamp[7]}-${sixDigitPathHash(packagePath)}`;
+  }
+  const date = [
+    capturedAt.getUTCFullYear(),
+    padDatePart(capturedAt.getUTCMonth() + 1),
+    padDatePart(capturedAt.getUTCDate()),
+  ].join("");
+  const time = [
+    padDatePart(capturedAt.getUTCHours()),
+    padDatePart(capturedAt.getUTCMinutes()),
+    padDatePart(capturedAt.getUTCSeconds()),
+  ].join("");
+  return `spike-${date}-${time}-${padDatePart(capturedAt.getUTCMilliseconds(), 3)}-${sixDigitPathHash(packagePath)}`;
+}
+
+function rawCapturedAt(packagePath: string, fallbackTimestamp: number): Date {
+  const directoryTimestamp = rawPackageTimestamp(packagePath);
+  if (directoryTimestamp !== undefined) {
+    return directoryTimestamp;
+  }
+  return new Date(
+    Number.isFinite(fallbackTimestamp) && fallbackTimestamp > 0
+      ? fallbackTimestamp
+      : 0,
+  );
+}
+
+function rawPackageTimestamp(packagePath: string): Date | undefined {
+  const match = RAW_CAPTURE_DIRECTORY_SEGMENT.exec(baseName(packagePath));
+  if (match === null) {
+    return undefined;
+  }
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const millisecond = Number(match[7]);
+  const parentMonth = packageShardMonth(packagePath);
+  if (parentMonth !== `${match[1]}-${match[2]}`) {
+    return undefined;
+  }
+
+  const localDate = new Date(
+    year,
+    month - 1,
+    day,
+    hour,
+    minute,
+    second,
+    millisecond,
+  );
+  if (
+    localDate.getFullYear() !== year ||
+    localDate.getMonth() !== month - 1 ||
+    localDate.getDate() !== day ||
+    localDate.getHours() !== hour ||
+    localDate.getMinutes() !== minute ||
+    localDate.getSeconds() !== second ||
+    localDate.getMilliseconds() !== millisecond
+  ) {
+    return undefined;
+  }
+  return localDate;
+}
+
+function rawPayloadPath(packagePath: string, relativePath: string): string {
+  return relativePath.slice(packagePath.length + 1);
+}
+
+function isSafeRawPayloadPath(value: string): boolean {
+  if (
+    value.length === 0 ||
+    value.startsWith("/") ||
+    value.includes("\\") ||
+    value.includes("\0")
+  ) {
+    return false;
+  }
+  return value.split("/").every(
+    (segment) => segment.length > 0 && segment !== "." && segment !== "..",
+  );
+}
+
+async function readRawPackage(
+  packagePath: string,
+  selectedByPath: ReadonlyMap<string, SelectedSpikeFile>,
+  dependencies: CaptureSpikeReaderDependencies,
+): Promise<SpikePackageResult> {
+  const selectedPayloads = [...selectedByPath.values()]
+    .filter((selected) =>
+      selected.relativePath.startsWith(`${packagePath}/`) &&
+      baseName(selected.relativePath) !== "capture.json",
+    )
+    .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+
+  if (selectedPayloads.length === 0 || selectedPayloads.length > 20) {
+    return invalidPackage(packagePath, [
+      issue("invalid-package", "invalid-payload", false, packagePath),
+    ]);
+  }
+
+  const oversizedPayload = selectedPayloads.find(
+    (selected) => selected.file.size > RAW_MAX_FILE_BYTES,
+  );
+  if (oversizedPayload !== undefined) {
+    return invalidPackage(packagePath, [
+      issue(
+        "invalid-package",
+        "raw-file-too-large",
+        false,
+        oversizedPayload.relativePath,
+      ),
+    ]);
+  }
+  const packageByteLength = selectedPayloads.reduce(
+    (total, selected) => total + selected.file.size,
+    0,
+  );
+  if (packageByteLength > RAW_MAX_PACKAGE_BYTES) {
+    return invalidPackage(packagePath, [
+      issue("invalid-package", "raw-package-too-large", false, packagePath),
+    ]);
+  }
+
+  const payloads: SpikePayloadPreview[] = [];
+  const descriptors: CaptureSpikePayloadV0[] = [];
+  for (const [index, selected] of selectedPayloads.entries()) {
+    let bytes: ArrayBuffer;
+    try {
+      bytes = await dependencies.readArrayBuffer(selected.file);
+    } catch (error) {
+      return unavailablePackage(packagePath, [
+        issue(
+          "temporarily-unavailable",
+          "payload-read-unavailable",
+          true,
+          selected.relativePath,
+          error,
+        ),
+      ]);
+    }
+
+    let localSha256: string;
+    let localHashDurationMs: number;
+    try {
+      const startedAt = dependencies.now();
+      localSha256 = await dependencies.sha256(bytes);
+      localHashDurationMs = dependencies.now() - startedAt;
+    } catch (error) {
+      return unavailablePackage(packagePath, [
+        issue(
+          "temporarily-unavailable",
+          "local-digest-unavailable",
+          true,
+          selected.relativePath,
+          error,
+        ),
+      ]);
+    }
+
+    const inputIndex = index + 1;
+    const payloadId = `raw-${String(inputIndex).padStart(3, "0")}`;
+    const path = rawPayloadPath(packagePath, selected.relativePath);
+    if (!isSafeRawPayloadPath(path)) {
+      return invalidPackage(packagePath, [
+        issue(
+          "invalid-package",
+          "unsafe-payload-path",
+          false,
+          selected.relativePath,
+        ),
+      ]);
+    }
+    const imageMediaType = rawImageMediaType(selected.file, bytes);
+    if (imageMediaType !== undefined) {
+      descriptors.push({
+        payloadId,
+        inputIndex,
+        observedType: "Raw Image",
+        previewKind: "image",
+        path,
+        mediaType: imageMediaType,
+        originalName: selected.file.name,
+        sourceByteLength: bytes.byteLength,
+      });
+      payloads.push({
+        payloadId,
+        inputIndex,
+        observedType: "Raw Image",
+        sourceMediaType: imageMediaType,
+        ...(selected.file.type.length === 0
+          ? {}
+          : { browserMediaType: selected.file.type }),
+        actualByteLength: bytes.byteLength,
+        localSha256,
+        localHashDurationMs,
+        kind: "image",
+        file: selected.file,
+      });
+      continue;
+    }
+
+    const decoded = decodePayload(bytes);
+    if (!decoded.ok) {
+      return invalidPackage(packagePath, [
+        issue("invalid-package", decoded.code, false, selected.relativePath),
+      ]);
+    }
+    const kind = isHttpUrl(decoded.value) ? "url" : "text";
+    const mediaType = kind === "url"
+      ? "text/uri-list; charset=utf-8"
+      : "text/plain; charset=utf-8";
+    const observedType = kind === "url" ? "Raw URL" : "Raw Text";
+    descriptors.push({
+      payloadId,
+      inputIndex,
+      observedType,
+      previewKind: kind,
+      path,
+      mediaType,
+      originalName: selected.file.name,
+      sourceByteLength: bytes.byteLength,
+    });
+    const base = {
+      payloadId,
+      inputIndex,
+      observedType,
+      sourceMediaType: mediaType,
+      ...(selected.file.type.length === 0
+        ? {}
+        : { browserMediaType: selected.file.type }),
+      actualByteLength: bytes.byteLength,
+      localSha256,
+      localHashDurationMs,
+    };
+    payloads.push(
+      kind === "url"
+        ? { ...base, kind, rawUrl: decoded.value }
+        : { ...base, kind, text: decoded.value },
+    );
+  }
+
+  const earliestModifiedAt = selectedPayloads.reduce(
+    (earliest, selected) => Math.min(earliest, selected.file.lastModified),
+    Number.POSITIVE_INFINITY,
+  );
+  const capturedAt = rawCapturedAt(packagePath, earliestModifiedAt);
+  const shardMonth = packageShardMonth(packagePath) ?? [
+    capturedAt.getUTCFullYear(),
+    padDatePart(capturedAt.getUTCMonth() + 1),
+  ].join("-");
+  const manifest: CaptureSpikeManifestV0 = {
+    schemaVersion: 0,
+    spikeBuild: 1,
+    captureId: rawCaptureId(packagePath, capturedAt),
+    capturedAt: capturedAt.toISOString(),
+    shardMonth,
+    transport: "ios-shortcut-spike",
+    hashMode: "none",
+    payloads: descriptors,
+  };
+
+  return {
+    status: "ready",
+    packagePath,
+    packageSource: "raw",
+    manifest,
+    payloads,
+  };
 }
 
 function previewBase(
@@ -429,7 +799,11 @@ export function snapshotSelectedFiles(
 export async function readCaptureLogSpikeDirectory(
   files: readonly SelectedSpikeFile[],
   dependencies: CaptureSpikeReaderDependencies,
-  options: { readonly maxPackages?: 1 | 2 | 3 } = {},
+  options: {
+    readonly maxPackages?: 1 | 2 | 3;
+    readonly acceptRawWithoutManifest?: boolean;
+    readonly newestRawFirst?: boolean;
+  } = {},
 ): Promise<SpikeDirectoryResult> {
   const selectionIssues: SpikeReadIssue[] = [];
   const groupedByPath = new Map<string, SelectedSpikeFile[]>();
@@ -487,16 +861,41 @@ export async function readCaptureLogSpikeDirectory(
       .map(inferPackagePath)
       .filter((packagePath): packagePath is string => packagePath !== undefined),
   );
-  const allPackagePaths = [...manifestPackagePaths]
+  const rawPackagePaths = new Set(
+    [...presentPaths]
+      .filter((relativePath) => baseName(relativePath) !== "capture.json")
+      .map(inferPackagePath)
+      .filter((packagePath): packagePath is string =>
+        packagePath !== undefined &&
+        rawPackageTimestamp(packagePath) !== undefined &&
+        !manifestPackagePaths.has(packagePath),
+      ),
+  );
+  const candidatePackagePaths = options.acceptRawWithoutManifest === true
+    ? new Set([...manifestPackagePaths, ...rawPackagePaths])
+    : manifestPackagePaths;
+  const allPackagePaths = [...candidatePackagePaths]
     .filter((packagePath) => !ambiguousPackagePaths.has(packagePath))
-    .sort();
+    .sort((left, right) => {
+      if (options.newestRawFirst !== true) {
+        return left.localeCompare(right);
+      }
+      const leftIsRaw = rawPackagePaths.has(left);
+      const rightIsRaw = rawPackagePaths.has(right);
+      if (leftIsRaw !== rightIsRaw) {
+        return leftIsRaw ? -1 : 1;
+      }
+      return right.localeCompare(left);
+    });
 
   const ignoredWithoutManifest = new Set<string>();
   for (const relativePath of presentPaths) {
     const packagePath = inferPackagePath(relativePath);
     if (
       packagePath !== undefined &&
-      !manifestPackagePaths.has(packagePath)
+      !manifestPackagePaths.has(packagePath) &&
+      (options.acceptRawWithoutManifest !== true ||
+        !rawPackagePaths.has(packagePath))
     ) {
       ignoredWithoutManifest.add(packagePath);
     }
@@ -507,7 +906,9 @@ export async function readCaptureLogSpikeDirectory(
   const packages: SpikePackageResult[] = [];
   for (const packagePath of packagePaths) {
     packages.push(
-      await readPackage(packagePath, selectedByPath, dependencies),
+      manifestPackagePaths.has(packagePath)
+        ? await readPackage(packagePath, selectedByPath, dependencies)
+        : await readRawPackage(packagePath, selectedByPath, dependencies),
     );
   }
 
@@ -517,4 +918,16 @@ export async function readCaptureLogSpikeDirectory(
     truncatedPackageCount: allPackagePaths.length - packagePaths.length,
     selectionIssues,
   };
+}
+
+export function readCaptureDropDirectory(
+  files: readonly SelectedSpikeFile[],
+  dependencies: CaptureSpikeReaderDependencies,
+  options: { readonly maxPackages?: 1 | 2 | 3 } = {},
+): Promise<SpikeDirectoryResult> {
+  return readCaptureLogSpikeDirectory(files, dependencies, {
+    ...options,
+    acceptRawWithoutManifest: true,
+    newestRawFirst: true,
+  });
 }

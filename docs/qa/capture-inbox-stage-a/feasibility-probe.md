@@ -6,6 +6,20 @@
 
 The user asked to accelerate after the observations recorded here, so the manual probe stops at this point. Deferred checks are explicitly listed as **NOT YET VERIFIED** rather than treated as passing.
 
+## 2026-07-14 usability correction
+
+The attempted full manifest shortcut required enough manual actions that the user wanted to abandon the flow. This is a failed product-usability result even though the individual Shortcuts actions may be technically viable.
+
+The Stage A path is therefore split:
+
+- keep the target-device-proven `Text(Shortcut Input) → Save File` timestamp-directory probe;
+- let the Tenjin browser reader recognise `YYYY-MM/YYYYMMdd-HHmmss-SSS/probe` as a raw capture and generate diagnostic metadata locally;
+- retain strict `capture.json` parsing for old structured spike packages;
+- do not ask the user to build the variables, repeat loop, dictionaries, hashes, or manifest by hand;
+- calibrate the smallest URL/image path separately before claiming those input classes.
+
+This correction solves the proven text-capture pain point without claiming that raw folders have the completion-marker guarantees of a manifest package or that a persistent Inbox import already exists.
+
 ## Operator, device, and action vocabulary
 
 | Check | Observed result |

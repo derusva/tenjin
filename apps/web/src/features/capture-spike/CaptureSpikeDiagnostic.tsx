@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
-  readCaptureLogSpikeDirectory,
+  readCaptureDropDirectory,
   snapshotSelectedFiles,
   type CaptureSpikeReaderDependencies,
   type SpikeDirectoryResult,
@@ -14,7 +14,7 @@ import {
 export interface CaptureSpikeDiagnosticProps {
   readonly ledgerHref: string;
   readonly readerDependencies: CaptureSpikeReaderDependencies;
-  readonly inspect?: typeof readCaptureLogSpikeDirectory;
+  readonly inspect?: typeof readCaptureDropDirectory;
 }
 
 type DiagnosticState =
@@ -49,6 +49,8 @@ const ISSUE_COPY: Readonly<Record<SpikeReadIssueCode, string>> = {
   "payload-missing": "文件暂不可读，可能仍在 iCloud 下载；请稍后重试。",
   "payload-read-unavailable": "文件暂不可读，可能仍在 iCloud 下载；请稍后重试。",
   "payload-invalid-utf8": "文字 payload 不是有效的 UTF-8。",
+  "raw-file-too-large": "单个收件箱文件超过 20 MB，暂不读取。",
+  "raw-package-too-large": "这一组收件箱文件超过 50 MB，暂不读取。",
   "source-byte-length-mismatch": "本地文件字节数与源端记录不一致。",
   "source-digest-mismatch": "本地 SHA-256 与源端摘要不一致。",
   "local-digest-unavailable": "本机摘要计算暂不可用，请重试。",
@@ -90,7 +92,7 @@ function failedCopy(name: string | undefined): string {
   if (isPermissionError(name)) {
     return "无法读取所选目录，请检查浏览器文件权限后重试。";
   }
-  return "读取目录失败，请重新选择 CaptureLogSpike 月份目录。";
+  return "读取目录失败，请重新选择 Tenjin 收件箱目录。";
 }
 
 function IssueList({
@@ -140,10 +142,14 @@ function CaptureImage({ file, inputIndex }: { readonly file: File; readonly inpu
 function PayloadPreview({
   payload,
   titleId,
+  simplified = false,
 }: {
   readonly payload: SpikePayloadPreview;
   readonly titleId: string;
+  readonly simplified?: boolean;
 }) {
+  const simplifiedType =
+    payload.kind === "text" ? "文字" : payload.kind === "url" ? "链接" : "图片";
   const sourceDigestCopy =
     payload.sourceDigestMatches === true
       ? "与源端一致"
@@ -154,17 +160,21 @@ function PayloadPreview({
   return (
     <section className="capture-spike-payload" aria-labelledby={titleId}>
       <h3 id={titleId}>
-        #{String(payload.inputIndex).padStart(2, "0")} · {payload.observedType}
+        #{String(payload.inputIndex).padStart(2, "0")} · {simplified ? simplifiedType : payload.observedType}
       </h3>
-      <dl className="capture-spike-data-grid">
-        <div><dt>payloadId</dt><dd>{payload.payloadId}</dd></div>
-        <div><dt>源端 mediaType</dt><dd>{payload.sourceMediaType ?? "未提供"}</dd></div>
-        <div><dt>浏览器 mediaType</dt><dd>{payload.browserMediaType ?? "未提供"}</dd></div>
-        <div><dt>字节数</dt><dd>{payload.actualByteLength} 字节</dd></div>
-        <div><dt>本地 SHA-256</dt><dd className="capture-spike-hash">{payload.localSha256}</dd></div>
-        <div><dt>源端摘要比较</dt><dd>{sourceDigestCopy}</dd></div>
-        <div><dt>本地计算耗时</dt><dd>{payload.localHashDurationMs.toFixed(2)} ms</dd></div>
-      </dl>
+      {simplified ? (
+        <p className="capture-spike-raw-meta">{payload.actualByteLength} 字节</p>
+      ) : (
+        <dl className="capture-spike-data-grid">
+          <div><dt>payloadId</dt><dd>{payload.payloadId}</dd></div>
+          <div><dt>源端 mediaType</dt><dd>{payload.sourceMediaType ?? "未提供"}</dd></div>
+          <div><dt>浏览器 mediaType</dt><dd>{payload.browserMediaType ?? "未提供"}</dd></div>
+          <div><dt>字节数</dt><dd>{payload.actualByteLength} 字节</dd></div>
+          <div><dt>本地 SHA-256</dt><dd className="capture-spike-hash">{payload.localSha256}</dd></div>
+          <div><dt>源端摘要比较</dt><dd>{sourceDigestCopy}</dd></div>
+          <div><dt>本地计算耗时</dt><dd>{payload.localHashDurationMs.toFixed(2)} ms</dd></div>
+        </dl>
+      )}
       <div className="capture-spike-preview">
         <p className="capture-spike-preview-label">预览</p>
         {payload.kind === "text" ? (
@@ -188,21 +198,32 @@ function PackageResult({
 }) {
   const titleId = `capture-spike-package-${packageIndex}`;
   if (packageResult.status === "ready") {
+    const isRaw = packageResult.packageSource === "raw";
     return (
       <article className="capture-spike-package" aria-labelledby={titleId}>
         <header className="capture-spike-package-header">
           <div>
-            <p className="capture-spike-kicker">READY · PACKAGE {String(packageIndex + 1).padStart(2, "0")}</p>
-            <h2 id={titleId}>{packageResult.manifest.captureId}</h2>
+            <p className="capture-spike-kicker">
+              {isRaw ? "已识别 · 原始文件" : "READY · PACKAGE"} {String(packageIndex + 1).padStart(2, "0")}
+            </p>
+            <h2 id={titleId}>
+              {isRaw ? "简化快捷指令可用" : packageResult.manifest.captureId}
+            </h2>
           </div>
           <span className="capture-spike-state-mark" aria-label="状态 ready">R</span>
         </header>
         <p className="capture-spike-path">{packageResult.packagePath}</p>
         <dl className="capture-spike-data-grid capture-spike-package-data">
-          <div><dt>capturedAt</dt><dd>{packageResult.manifest.capturedAt}</dd></div>
-          <div><dt>sourceApp</dt><dd>{packageResult.manifest.sourceApp ?? "来源身份未提供"}</dd></div>
-          <div><dt>hashMode</dt><dd>{packageResult.manifest.hashMode}</dd></div>
-          <div><dt>payload 数</dt><dd>{packageResult.payloads.length}</dd></div>
+          <div><dt>{isRaw ? "文件时间（推定）" : "capturedAt"}</dt><dd>{packageResult.manifest.capturedAt}</dd></div>
+          {isRaw ? (
+            <div><dt>整理方式</dt><dd>由 Tenjin 自动生成元数据</dd></div>
+          ) : (
+            <>
+              <div><dt>sourceApp</dt><dd>{packageResult.manifest.sourceApp ?? "来源身份未提供"}</dd></div>
+              <div><dt>hashMode</dt><dd>{packageResult.manifest.hashMode}</dd></div>
+            </>
+          )}
+          <div><dt>内容数</dt><dd>{packageResult.payloads.length}</dd></div>
         </dl>
         <div className="capture-spike-payloads">
           {packageResult.payloads.map((payload, payloadIndex) => (
@@ -210,6 +231,7 @@ function PackageResult({
               key={`${packageResult.packagePath}/${payload.payloadId}`}
               payload={payload}
               titleId={`capture-spike-payload-${packageIndex}-${payloadIndex}`}
+              simplified={isRaw}
             />
           ))}
         </div>
@@ -230,6 +252,10 @@ function PackageResult({
 }
 
 function DiagnosticResult({ result }: { readonly result: SpikeDirectoryResult }) {
+  const rawPackageCount = result.packages.filter(
+    (packageResult) =>
+      packageResult.status === "ready" && packageResult.packageSource === "raw",
+  ).length;
   const hasNoDiscovery =
     result.packages.length === 0 &&
     result.selectionIssues.length === 0 &&
@@ -237,6 +263,11 @@ function DiagnosticResult({ result }: { readonly result: SpikeDirectoryResult })
 
   return (
     <div className="capture-spike-results">
+      {rawPackageCount === 0 ? null : (
+        <aside className="capture-spike-notice capture-spike-notice-accent">
+          已识别 {rawPackageCount} 组原始内容；手机端不需要生成 capture.json。
+        </aside>
+      )}
       {result.selectionIssues.length === 0 ? null : (
         <section className="capture-spike-selection-diagnostic" aria-labelledby="capture-spike-selection-title">
           <h2 id="capture-spike-selection-title">选择无效</h2>
@@ -245,7 +276,7 @@ function DiagnosticResult({ result }: { readonly result: SpikeDirectoryResult })
       )}
       {result.ignoredWithoutManifest.length === 0 ? null : (
         <aside className="capture-spike-notice">
-          忽略 {result.ignoredWithoutManifest.length} 个没有 capture.json 的目录：{" "}
+          保留 {result.ignoredWithoutManifest.length} 个尚未完成的旧测试目录：{" "}
           <span className="capture-spike-path">{result.ignoredWithoutManifest.join("、")}</span>
         </aside>
       )}
@@ -256,7 +287,7 @@ function DiagnosticResult({ result }: { readonly result: SpikeDirectoryResult })
       )}
       {hasNoDiscovery ? (
         <div className="capture-spike-empty state-view">
-          <p>没有找到可读取的 capture.json。</p>
+          <p>没有找到可识别的收件箱文件。</p>
         </div>
       ) : null}
       <div className="capture-spike-package-list">
@@ -273,7 +304,7 @@ function announcementCopy(state: DiagnosticState): string {
     return "";
   }
   if (state.kind === "reading") {
-    return "正在读取 CaptureLogSpike。";
+    return "正在识别 Tenjin 收件箱文件。";
   }
   if (state.kind === "failed") {
     return "读取失败，可以重新选择目录。";
@@ -288,7 +319,7 @@ function announcementCopy(state: DiagnosticState): string {
 export function CaptureSpikeDiagnostic({
   ledgerHref,
   readerDependencies,
-  inspect = readCaptureLogSpikeDirectory,
+  inspect = readCaptureDropDirectory,
 }: CaptureSpikeDiagnosticProps) {
   const [state, setState] = useState<DiagnosticState>({ kind: "idle" });
   const requestGeneration = useRef(0);
@@ -353,16 +384,16 @@ export function CaptureSpikeDiagnostic({
         <section className="utility-view capture-spike-view" aria-labelledby="capture-spike-title">
           <a className="secondary-action capture-spike-back" href={ledgerHref}>返回 Tenjin</a>
           <header className="capture-spike-header">
-            <p className="capture-spike-eyebrow">STAGE A · READ-ONLY FIELD SHEET</p>
-            <h1 id="capture-spike-title">捕获链路诊断</h1>
-            <p className="capture-spike-lede">逐包核对 iPhone → iCloud → 浏览器的实际交付结果。</p>
+            <p className="capture-spike-eyebrow">TENJIN · ICLOUD INBOX</p>
+            <h1 id="capture-spike-title">收件箱文件验证</h1>
+            <p className="capture-spike-lede">选择快捷指令保存的目录，自动识别文字、链接和图片。</p>
           </header>
-          <aside className="capture-spike-warning" aria-label="阶段 A 只读提示">
-            <strong>仅用于阶段 A</strong>
-            <span>不会导入，也不会保存到 Tenjin；刷新或离开页面即丢弃结果。</span>
+          <aside className="capture-spike-warning" aria-label="本机只读提示">
+            <strong>只在本机读取</strong>
+            <span>不会上传、修改或删除 iCloud 文件；刷新或离开页面即清除预览。</span>
           </aside>
           <label className="secondary-action capture-spike-picker">
-            <span>选择 CaptureLogSpike 月份目录</span>
+            <span>选择 Tenjin 收件箱目录</span>
             <input
               ref={configureDirectoryInput}
               className="capture-spike-directory-input"
@@ -371,6 +402,9 @@ export function CaptureSpikeDiagnostic({
               onChange={selectDirectory}
             />
           </label>
+          <p className="capture-spike-picker-hint">
+            iCloud Drive → Shortcuts → Tenjin → CaptureLogSpike → 当月目录
+          </p>
           <p
             className="visually-hidden capture-spike-announcement"
             role="status"
@@ -381,11 +415,11 @@ export function CaptureSpikeDiagnostic({
           <div className="capture-spike-workbench">
             {state.kind === "idle" ? (
               <div className="capture-spike-empty state-view">
-                <p>尚未选择 CaptureLogSpike 月份目录</p>
+                <p>尚未选择收件箱目录</p>
               </div>
             ) : state.kind === "reading" ? (
               <div className="capture-spike-empty state-view">
-                <p>正在读取 CaptureLogSpike…</p>
+                <p>正在识别收件箱文件…</p>
               </div>
             ) : state.kind === "failed" ? (
               <div className="capture-spike-empty state-view">
