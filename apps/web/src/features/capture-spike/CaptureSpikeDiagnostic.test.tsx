@@ -172,7 +172,7 @@ describe("CaptureSpikeDiagnostic", () => {
     choose(screen.getByLabelText("选择 Tenjin 收件箱目录"), [selected]);
 
     const capture = await screen.findByRole("article", {
-      name: "简化快捷指令可用",
+      name: "原始测试文件可读取",
     });
     expect(within(capture).getByText("辞書形のまま保存する")).toBeInTheDocument();
     expect(within(capture).getByText("由 Tenjin 自动生成元数据")).toBeInTheDocument();
@@ -181,7 +181,7 @@ describe("CaptureSpikeDiagnostic", () => {
     expect(within(capture).queryByText("hashMode")).not.toBeInTheDocument();
     expect(within(capture).queryByText("本地 SHA-256")).not.toBeInTheDocument();
     expect(
-      screen.getByText(/手机端不需要生成 capture.json/),
+      screen.getByText(/不代表快捷指令安装或分享链路已经通过/),
     ).toBeInTheDocument();
     expect(
       screen.getByText(/iCloud Drive → Shortcuts → Tenjin → CaptureLogSpike/),
@@ -193,8 +193,9 @@ describe("CaptureSpikeDiagnostic", () => {
     const inspect = vi.fn<Inspect>(() => pending.promise);
     const view = renderDiagnostic(inspect);
 
-    expect(screen.getByRole("heading", { name: "收件箱文件验证" })).toBeInTheDocument();
-    expect(screen.getByText(/不会上传、修改或删除 iCloud 文件/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "捕获链路诊断" })).toBeInTheDocument();
+    expect(screen.getByText(/不会创建 Tenjin 记录/)).toBeInTheDocument();
+    expect(screen.getByText(/这里只读预览，不导入账本/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "返回 Tenjin" })).toHaveAttribute("href", "../");
     expect(screen.getByText("尚未选择收件箱目录")).toBeInTheDocument();
     const announcement = screen.getByRole("status");

@@ -8,6 +8,7 @@ export {
   BookOpen as ReviewIcon,
   Ear as ListeningMissIcon,
   MessageSquare as ProductionCorrectionIcon,
+  ClipboardPaste as PasteIcon,
   Pencil as CaptureIcon,
   Pencil as RecordIcon,
   Search as SearchIcon,

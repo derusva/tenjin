@@ -207,7 +207,7 @@ function PackageResult({
               {isRaw ? "已识别 · 原始文件" : "READY · PACKAGE"} {String(packageIndex + 1).padStart(2, "0")}
             </p>
             <h2 id={titleId}>
-              {isRaw ? "简化快捷指令可用" : packageResult.manifest.captureId}
+              {isRaw ? "原始测试文件可读取" : packageResult.manifest.captureId}
             </h2>
           </div>
           <span className="capture-spike-state-mark" aria-label="状态 ready">R</span>
@@ -265,7 +265,8 @@ function DiagnosticResult({ result }: { readonly result: SpikeDirectoryResult })
     <div className="capture-spike-results">
       {rawPackageCount === 0 ? null : (
         <aside className="capture-spike-notice capture-spike-notice-accent">
-          已识别 {rawPackageCount} 组原始内容；手机端不需要生成 capture.json。
+          已识别 {rawPackageCount} 组原始测试文件；只证明本次所选文件可读取，
+          不代表快捷指令安装或分享链路已经通过。
         </aside>
       )}
       {result.selectionIssues.length === 0 ? null : (
@@ -384,13 +385,17 @@ export function CaptureSpikeDiagnostic({
         <section className="utility-view capture-spike-view" aria-labelledby="capture-spike-title">
           <a className="secondary-action capture-spike-back" href={ledgerHref}>返回 Tenjin</a>
           <header className="capture-spike-header">
-            <p className="capture-spike-eyebrow">TENJIN · ICLOUD INBOX</p>
-            <h1 id="capture-spike-title">收件箱文件验证</h1>
-            <p className="capture-spike-lede">选择快捷指令保存的目录，自动识别文字、链接和图片。</p>
+            <p className="capture-spike-eyebrow">DEVELOPER QA · STAGE A</p>
+            <h1 id="capture-spike-title">捕获链路诊断</h1>
+            <p className="capture-spike-lede">
+              只验证 iPhone → iCloud → 浏览器的文件交付，不会创建 Tenjin 记录。
+            </p>
           </header>
-          <aside className="capture-spike-warning" aria-label="本机只读提示">
-            <strong>只在本机读取</strong>
-            <span>不会上传、修改或删除 iCloud 文件；刷新或离开页面即清除预览。</span>
+          <aside className="capture-spike-warning" aria-label="开发者实验提示">
+            <strong>开发者实验</strong>
+            <span>
+              这里只读预览，不导入账本。普通记录请返回 Tenjin，直接粘贴或输入。
+            </span>
           </aside>
           <label className="secondary-action capture-spike-picker">
             <span>选择 Tenjin 收件箱目录</span>

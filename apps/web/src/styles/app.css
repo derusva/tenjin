@@ -159,6 +159,34 @@ svg {
   box-shadow: 2px 3px 0 rgb(23 26 24 / 6%);
 }
 
+.capture-entry-tools {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--soft-hairline);
+  padding: 6px 8px 6px 18px;
+  color: var(--muted-ink);
+  font-size: 0.78rem;
+  font-weight: 750;
+  letter-spacing: 0.03em;
+}
+
+.capture-paste-action {
+  display: inline-flex;
+  min-height: var(--tap-target);
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--forest);
+  padding: 5px 11px;
+  background: transparent;
+  color: var(--forest);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .capture-input {
   display: block;
   width: 100%;
@@ -173,6 +201,10 @@ svg {
   font-family: var(--heading-font);
   font-size: clamp(1.8rem, 8vw, 2.15rem);
   line-height: 1.45;
+}
+
+.capture-input::placeholder {
+  color: rgb(23 26 24 / 42%);
 }
 
 .capture-input-corrected {
@@ -272,6 +304,13 @@ svg {
   margin: -4px 0 0;
   color: var(--forest);
   font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.capture-paste-feedback {
+  margin: -5px 2px 0;
+  color: var(--forest);
+  font-size: 0.78rem;
   font-weight: 700;
 }
 
@@ -1107,6 +1146,7 @@ svg {
 }
 
 @media (hover: hover) {
+  .capture-paste-action:hover:not(:disabled),
   .quick-actions button:hover,
   .secondary-action:hover,
   .back-action:hover,

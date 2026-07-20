@@ -53,6 +53,93 @@ describe("CaptureComposer", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("pastes clipboard text into the primary capture field without any setup flow", async () => {
+    const user = userEvent.setup();
+    const readClipboardText = vi.fn(async () => "知らない表現");
+
+    render(
+      <CaptureComposer
+        onSave={async () => undefined}
+        readClipboardText={readClipboardText}
+      />,
+    );
+
+    expect(
+      screen.getByPlaceholderText("词语、句子、听到的近似音都可以"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "粘贴" }));
+
+    expect(readClipboardText).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByRole("textbox", { name: "遇到的词或表达" }),
+    ).toHaveValue("知らない表現");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "已粘贴，选择类型后记下来",
+    );
+  });
+
+  it("keeps the native long-press paste path available when clipboard reading fails", async () => {
+    const user = userEvent.setup();
+    const readClipboardText = vi.fn(async () => {
+      throw new DOMException("denied", "NotAllowedError");
+    });
+
+    render(
+      <CaptureComposer
+        onSave={async () => undefined}
+        readClipboardText={readClipboardText}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "粘贴" }));
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "请在输入框内长按并选择“粘贴”",
+    );
+    expect(
+      screen.getByRole("textbox", { name: "遇到的词或表达" }),
+    ).toHaveFocus();
+  });
+
+  it("locks editing and save while a clipboard read is pending", async () => {
+    let resolveClipboard!: (value: string) => void;
+    const clipboard = new Promise<string>((resolve) => {
+      resolveClipboard = resolve;
+    });
+    const readClipboardText = vi.fn(() => clipboard);
+    const onSave = vi.fn(async () => undefined);
+    const user = userEvent.setup();
+
+    render(
+      <CaptureComposer
+        onSave={onSave}
+        readClipboardText={readClipboardText}
+      />,
+    );
+
+    const original = screen.getByRole("textbox", {
+      name: "遇到的词或表达",
+    });
+    await user.type(original, "已有草稿");
+    await user.click(screen.getByRole("button", { name: "粘贴" }));
+
+    expect(original).toBeDisabled();
+    expect(screen.getByRole("button", { name: "读取中…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "记下来" })).toBeDisabled();
+    for (const radio of screen.getAllByRole("radio")) {
+      expect(radio).toBeDisabled();
+    }
+    expect(onSave).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveClipboard("剪贴板内容");
+      await clipboard;
+    });
+
+    expect(original).toBeEnabled();
+    expect(original).toHaveValue("已有草稿剪贴板内容");
+  });
+
   it("shows the correction textarea only for the correction category", async () => {
     const user = userEvent.setup();
 
