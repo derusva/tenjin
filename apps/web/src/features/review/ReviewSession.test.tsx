@@ -1,4 +1,5 @@
 import type { ItemView, ReviewItem } from "@tenjin/core";
+import type { ContextImageRecord } from "@tenjin/storage-indexeddb";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
@@ -28,6 +29,7 @@ function makeReviewItem(
   reason: ReviewItem["reason"] = "unstable",
   presentation: {
     readonly prompt?: string;
+    readonly promptImage?: ContextImageRecord;
     readonly reveal?: ReviewReveal;
   } = {},
 ): ReviewPresentation {
@@ -37,6 +39,9 @@ function makeReviewItem(
     reason,
     item: makeItem(itemId, display),
     prompt: presentation.prompt ?? display,
+    ...(presentation.promptImage === undefined
+      ? {}
+      : { promptImage: presentation.promptImage }),
     reveal: presentation.reveal,
   };
 }
@@ -50,6 +55,43 @@ function createDeferred() {
 }
 
 describe("ReviewSession", () => {
+  it("shows a local lookup image as the prompt and keeps its answer hidden until reveal", async () => {
+    const user = userEvent.setup();
+    const image = {
+      blob: new Blob(["png"], { type: "image/png" }),
+      mediaType: "image/png",
+      name: "lookup.png",
+      byteLength: 3,
+      sha256: "ab".repeat(32),
+    } as const satisfies ContextImageRecord;
+    render(
+      <ReviewSession
+        items={[
+          makeReviewItem("item-1", "一期一会", "unstable", {
+            prompt: "一期一会",
+            promptImage: image,
+            reveal: {
+              label: "查到的意思 / 解释",
+              text: "一生只有一次的相遇",
+            },
+          }),
+        ]}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    expect(
+      screen.getByRole("img", { name: "复习图片：lookup.png" }),
+    ).toHaveClass("review-prompt-thumbnail");
+    expect(screen.queryByText("一生只有一次的相遇")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+
+    expect(screen.getByText("查到的意思 / 解释")).toBeInTheDocument();
+    expect(screen.getByText("一生只有一次的相遇")).toBeInTheDocument();
+  });
+
   it("shows the original P prompt and keeps the correction hidden until reveal", async () => {
     const user = userEvent.setup();
     render(

@@ -12,10 +12,31 @@ import {
   type IDBPObjectStore,
 } from "idb";
 
+export const CONTEXT_IMAGE_MEDIA_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/heic",
+  "image/heif",
+] as const;
+export const MAX_CONTEXT_IMAGE_BYTES = 20 * 1024 * 1024;
+
+export type ContextImageMediaType =
+  (typeof CONTEXT_IMAGE_MEDIA_TYPES)[number];
+
+export interface ContextImageRecord {
+  readonly blob: Blob;
+  readonly mediaType: ContextImageMediaType;
+  readonly name: string;
+  readonly byteLength: number;
+  readonly sha256: string;
+}
+
 export interface ContextRecord {
   readonly hash: string;
   readonly original: string;
   readonly corrected?: string;
+  readonly answer?: string;
+  readonly image?: ContextImageRecord;
   readonly createdAt: string;
 }
 
@@ -83,6 +104,10 @@ interface DeviceSequenceRecord {
 type AllocatorRecord = GlobalClockRecord | DeviceSequenceRecord;
 
 const GLOBAL_CLOCK_KEY = "global-hlc";
+const CONTEXT_IMAGE_MEDIA_TYPE_SET = new Set<string>(
+  CONTEXT_IMAGE_MEDIA_TYPES,
+);
+const SHA256_HEXADECIMAL = /^[a-f0-9]{64}$/;
 
 function deviceSequenceKey(deviceId: string): string {
   return `device-sequence:${deviceId}`;
@@ -99,6 +124,18 @@ function isCanonicalUtcTimestamp(value: unknown): value is string {
 
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+function isBlob(value: unknown): value is Blob {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.prototype.toString.call(value) === "[object Blob]" &&
+    typeof Reflect.get(value, "size") === "number" &&
+    typeof Reflect.get(value, "type") === "string" &&
+    typeof Reflect.get(value, "slice") === "function" &&
+    typeof Reflect.get(value, "arrayBuffer") === "function"
+  );
 }
 
 function assertValidEvent(event: Event): void {
@@ -124,9 +161,92 @@ function assertValidContext(context: ContextRecord): void {
   ) {
     throw new TypeError("Context corrected must be a non-empty string");
   }
+  if (Object.hasOwn(context, "answer") && !isNonEmptyString(context.answer)) {
+    throw new TypeError("Context answer must be a non-empty string");
+  }
+  if (Object.hasOwn(context, "image")) {
+    const image = context.image;
+    if (typeof image !== "object" || image === null) {
+      throw new TypeError("Context image must be an object");
+    }
+    if (!isBlob(image.blob)) {
+      throw new TypeError("Context image blob must be a Blob");
+    }
+    if (!CONTEXT_IMAGE_MEDIA_TYPE_SET.has(image.mediaType)) {
+      throw new TypeError("Context image mediaType must be supported");
+    }
+    if (!isNonEmptyString(image.name)) {
+      throw new TypeError("Context image name must be a non-empty string");
+    }
+    if (
+      !Number.isSafeInteger(image.byteLength) ||
+      image.byteLength <= 0 ||
+      image.byteLength > MAX_CONTEXT_IMAGE_BYTES
+    ) {
+      throw new TypeError(
+        "Context image byteLength must be between 1 byte and 20 MB",
+      );
+    }
+    if (image.blob.size !== image.byteLength) {
+      throw new TypeError(
+        "Context image blob size must match image byteLength",
+      );
+    }
+    if (image.blob.type.toLowerCase() !== image.mediaType) {
+      throw new TypeError(
+        "Context image blob type must match image mediaType",
+      );
+    }
+    if (!SHA256_HEXADECIMAL.test(image.sha256)) {
+      throw new TypeError(
+        "Context image sha256 must be a lowercase SHA-256 digest",
+      );
+    }
+  }
   if (!isCanonicalUtcTimestamp(context.createdAt)) {
     throw new TypeError("Context createdAt must be a canonical UTC timestamp");
   }
+}
+
+async function assertValidContextImageDigest(
+  context: ContextRecord,
+): Promise<void> {
+  if (context.image === undefined) {
+    return;
+  }
+
+  const bytes = await context.image.blob.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const hexadecimal = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  if (hexadecimal !== context.image.sha256) {
+    throw new TypeError("Context image sha256 must match the Blob content");
+  }
+}
+
+function contextsHaveSameIdentity(
+  left: ContextRecord,
+  right: ContextRecord,
+): boolean {
+  const leftImage = left.image;
+  const rightImage = right.image;
+  const sameImage =
+    leftImage === undefined && rightImage === undefined
+      ? true
+      : leftImage !== undefined && rightImage !== undefined
+        ? leftImage.sha256 === rightImage.sha256 &&
+          leftImage.mediaType === rightImage.mediaType &&
+          leftImage.byteLength === rightImage.byteLength
+        : false;
+
+  return (
+    left.hash === right.hash &&
+    left.original === right.original &&
+    left.corrected === right.corrected &&
+    left.answer === right.answer &&
+    sameImage
+  );
 }
 
 function assertValidCapture(
@@ -668,6 +788,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     context: ContextRecord,
   ): Promise<void> {
     assertValidCapture(events, context);
+    await assertValidContextImageDigest(context);
 
     const transaction = this.#database.transaction(
       ["events", "contexts", "clock"],
@@ -701,7 +822,18 @@ class IndexedDBLedgerRepository implements LedgerRepository {
       }
       const storageContext = structuredClone(context);
       assertValidCapture(storageEvents, storageContext);
-      await transaction.objectStore("contexts").put(storageContext);
+      const contextStore = transaction.objectStore("contexts");
+      const existingContext = await contextStore.get(storageContext.hash);
+      if (existingContext === undefined) {
+        await contextStore.put(storageContext);
+      } else {
+        assertValidContext(existingContext);
+        if (!contextsHaveSameIdentity(existingContext, storageContext)) {
+          throw new Error(
+            `context hash ${storageContext.hash} already exists with different content`,
+          );
+        }
+      }
       await promoteAllocatorHighWater(
         eventStore,
         transaction.objectStore("clock"),

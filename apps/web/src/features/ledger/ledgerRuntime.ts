@@ -94,10 +94,18 @@ export function createLedgerRuntime(
         return next;
       },
       async hashContext(context) {
-        const input =
-          context.corrected === undefined
-            ? { original: context.original }
-            : { original: context.original, corrected: context.corrected };
+        const input = {
+          original: context.original,
+          ...(context.corrected === undefined
+            ? {}
+            : { corrected: context.corrected }),
+          ...(context.answer === undefined
+            ? {}
+            : { answer: context.answer }),
+          ...(context.imageSha256 === undefined
+            ? {}
+            : { imageSha256: context.imageSha256 }),
+        };
         const hexadecimal = await options.digest(JSON.stringify(input));
         return `sha256:${hexadecimal.toLowerCase()}`;
       },
@@ -120,7 +128,10 @@ export function createLedgerRuntime(
 
   return {
     async createCapture(command) {
-      if (command.original.trim().length === 0) {
+      if (
+        command.original.trim().length === 0 &&
+        (command.image?.name.trim().length ?? 0) === 0
+      ) {
         throw new TypeError("original must be a non-empty string");
       }
       const eventCount =

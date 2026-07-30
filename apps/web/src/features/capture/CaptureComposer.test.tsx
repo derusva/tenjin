@@ -15,6 +15,83 @@ function createDeferred() {
 }
 
 describe("CaptureComposer", () => {
+  it("selects, previews, removes, and submits one image with a lookup answer", async () => {
+    const user = userEvent.setup();
+    const file = new File(["png"], "lesson.png", { type: "image/png" });
+    const image = {
+      blob: new Blob(["png"], { type: "image/png" }),
+      mediaType: "image/png",
+      name: "lesson.png",
+      byteLength: 3,
+      sha256: "ab".repeat(32),
+    } as const;
+    const prepareImage = vi.fn(async () => image);
+    const onSave = vi.fn(async () => undefined);
+
+    render(
+      <CaptureComposer
+        onSave={onSave}
+        prepareImage={prepareImage}
+      />,
+    );
+
+    const input = screen.getByLabelText("选择图片");
+    const submit = screen.getByRole("button", { name: "记下来" });
+    expect(input).toHaveAttribute(
+      "accept",
+      "image/jpeg,image/png,image/heic,image/heif,.jpg,.jpeg,.png,.heic,.heif",
+    );
+    expect(input).not.toHaveAttribute("multiple");
+
+    await user.upload(input, file);
+
+    expect(prepareImage).toHaveBeenCalledWith(file);
+    expect(
+      await screen.findByRole("img", {
+        name: "所选图片预览：lesson.png",
+      }),
+    ).toBeInTheDocument();
+    expect(submit).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "移除图片" }));
+    expect(
+      screen.queryByRole("img", {
+        name: "所选图片预览：lesson.png",
+      }),
+    ).not.toBeInTheDocument();
+    expect(submit).toBeDisabled();
+
+    await user.upload(input, file);
+    await screen.findByRole("img", {
+      name: "所选图片预览：lesson.png",
+    });
+    await user.type(
+      screen.getByRole("textbox", {
+        name: "查到的意思 / 解释（可选）",
+      }),
+      "  一课的截图  ",
+    );
+    await user.click(submit);
+
+    expect(onSave).toHaveBeenCalledWith({
+      type: "lookup",
+      original: "",
+      answer: "一课的截图",
+      image,
+      captureDurationMs: expect.any(Number),
+    });
+    expect(
+      screen.queryByRole("img", {
+        name: "所选图片预览：lesson.png",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("textbox", {
+        name: "查到的意思 / 解释（可选）",
+      }),
+    ).toHaveValue("");
+  });
+
   it("does not read the clock while rendering", () => {
     const now = vi.spyOn(Date, "now");
 

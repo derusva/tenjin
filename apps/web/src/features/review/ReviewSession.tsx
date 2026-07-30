@@ -6,6 +6,7 @@ import {
   AssessmentHesitantIcon,
   AssessmentPassIcon,
 } from "../../components/icons.js";
+import { LocalImagePreview } from "../capture/LocalImagePreview.js";
 import type { VerificationResult } from "../ledger/ledgerRuntime.js";
 import type { ReviewPresentation } from "./reviewQueue.js";
 
@@ -127,6 +128,16 @@ export function ReviewSession({
         </p>
       </header>
       <article className="review-item">
+        {current.promptImage === undefined ? null : (
+          <figure className="review-prompt-image">
+            <LocalImagePreview
+              className="review-prompt-thumbnail"
+              blob={current.promptImage.blob}
+              alt={`复习图片：${current.promptImage.name}`}
+            />
+            <figcaption>{current.promptImage.name}</figcaption>
+          </figure>
+        )}
         <h1 id="review-item-title" ref={nextContentRef} tabIndex={-1}>
           {current.prompt}
         </h1>

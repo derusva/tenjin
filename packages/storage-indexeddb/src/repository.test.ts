@@ -364,6 +364,108 @@ describe("openLedgerRepository", () => {
     });
   });
 
+  it("round-trips an image Blob and removes it with the unreferenced context on undo", async () => {
+    const dbName = createDatabaseName("image-roundtrip-undo");
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    const imageSha256 =
+      "0f4636c78f65d3639ece5a064b5ae753e3408614a14fb18ab4d7540d2c248543";
+    const imageContext = {
+      hash: context.hash,
+      original: "lesson.png",
+      answer: "课程截图",
+      image: {
+        blob: new Blob([imageBytes], { type: "image/png" }),
+        mediaType: "image/png",
+        name: "lesson.png",
+        byteLength: imageBytes.byteLength,
+        sha256: imageSha256,
+      },
+      createdAt: context.createdAt,
+    } as const satisfies ContextRecord;
+
+    await repository.appendCapture([captureCreatedEvent], imageContext);
+    repository.close();
+    openRepositories.delete(repository);
+
+    const reopened = await openLedgerRepository({ dbName });
+    openRepositories.add(reopened);
+    const stored = (await reopened.readSnapshot()).contexts[0];
+    expect(stored).toMatchObject({
+      original: "lesson.png",
+      answer: "课程截图",
+      image: {
+        mediaType: "image/png",
+        name: "lesson.png",
+        byteLength: imageBytes.byteLength,
+        sha256: imageSha256,
+      },
+    });
+    expect(
+      new Uint8Array(await stored!.image!.blob.arrayBuffer()),
+    ).toEqual(imageBytes);
+
+    await reopened.appendDiscard(captureDiscardedEvent, imageContext.hash);
+
+    expect(await reopened.readSnapshot()).toEqual({
+      events: [captureCreatedEvent, captureDiscardedEvent],
+      contexts: [],
+    });
+  });
+
+  it("reuses the first immutable context for repeated identical image content", async () => {
+    const repository = await openTestRepository("image-context-reuse");
+    const imageBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47]);
+    const imageSha256 =
+      "0f4636c78f65d3639ece5a064b5ae753e3408614a14fb18ab4d7540d2c248543";
+    const firstContext = {
+      hash: context.hash,
+      original: "图片记录",
+      answer: "课程截图",
+      image: {
+        blob: new Blob([imageBytes], { type: "image/png" }),
+        mediaType: "image/png",
+        name: "first.png",
+        byteLength: imageBytes.byteLength,
+        sha256: imageSha256,
+      },
+      createdAt: context.createdAt,
+    } as const satisfies ContextRecord;
+    const secondContext = {
+      ...firstContext,
+      image: {
+        ...firstContext.image,
+        name: "renamed.png",
+      },
+      createdAt: "2026-07-11T00:21:00.000Z",
+    } as const satisfies ContextRecord;
+    const secondCapture = {
+      ...captureCreatedEvent,
+      eventId: "event-capture-2",
+      captureId: "capture-2",
+      seq: 2,
+      hlc: {
+        ...captureCreatedEvent.hlc,
+        counter: 1,
+      },
+    } as const satisfies CaptureCreatedEvent;
+
+    await repository.appendCapture([captureCreatedEvent], firstContext);
+    await repository.appendCapture([secondCapture], secondContext);
+
+    const snapshot = await repository.readSnapshot();
+    expect(snapshot.events).toHaveLength(2);
+    expect(snapshot.contexts).toHaveLength(1);
+    expect(snapshot.contexts[0]).toMatchObject({
+      createdAt: firstContext.createdAt,
+      image: {
+        name: "first.png",
+        sha256: imageSha256,
+      },
+    });
+  });
+
   it("sorts multiple contexts by hash regardless of insertion order", async () => {
     const repository = await openTestRepository("context-sorting");
     const earlierContext = {
@@ -490,6 +592,34 @@ describe("openLedgerRepository", () => {
       name: "a non-canonical context timestamp",
       events: [captureCreatedEvent],
       context: { ...context, createdAt: "2026-07-11T00:20:00Z" },
+    },
+    {
+      name: "image Blob size that differs from byteLength",
+      events: [captureCreatedEvent],
+      context: {
+        ...context,
+        image: {
+          blob: new Blob(["png"], { type: "image/png" }),
+          mediaType: "image/png",
+          name: "lesson.png",
+          byteLength: 4,
+          sha256: "ab".repeat(32),
+        },
+      },
+    },
+    {
+      name: "image sha256 that differs from Blob content",
+      events: [captureCreatedEvent],
+      context: {
+        ...context,
+        image: {
+          blob: new Blob(["png"], { type: "image/png" }),
+          mediaType: "image/png",
+          name: "lesson.png",
+          byteLength: 3,
+          sha256: "ab".repeat(32),
+        },
+      },
     },
   ] satisfies readonly {
     readonly name: string;

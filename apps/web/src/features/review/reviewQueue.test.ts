@@ -1,6 +1,10 @@
 import type { Event, LearningChannel } from "@tenjin/core";
 import { deriveLedger } from "@tenjin/core";
-import type { ContextRecord, LedgerSnapshot } from "@tenjin/storage-indexeddb";
+import type {
+  ContextImageRecord,
+  ContextRecord,
+  LedgerSnapshot,
+} from "@tenjin/storage-indexeddb";
 import { describe, expect, it } from "vitest";
 
 import { buildReviewQueue } from "./reviewQueue.js";
@@ -89,6 +93,48 @@ function context(
 }
 
 describe("buildReviewQueue", () => {
+  it("queues only lookup captures with an answer and reveals that answer", () => {
+    const answered = captureEvents(1, "lookup", "R");
+    const unanswered = captureEvents(2, "lookup", "R");
+    const image = {
+      blob: new Blob(["png"], { type: "image/png" }),
+      mediaType: "image/png",
+      name: "lookup.png",
+      byteLength: 3,
+      sha256: "ab".repeat(32),
+    } as const satisfies ContextImageRecord;
+    const events = [...answered, ...unanswered];
+
+    expect(
+      buildReviewQueue(
+        deriveLedger(events),
+        {
+          events,
+          contexts: [
+            {
+              ...context(1, "一期一会"),
+              answer: "一生只有一次的相遇",
+              image,
+            },
+            context(2, "还没查到答案"),
+          ],
+        },
+        5,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        itemId: "item-1",
+        channel: "R",
+        prompt: "一期一会",
+        promptImage: image,
+        reveal: {
+          label: "查到的意思 / 解释",
+          text: "一生只有一次的相遇",
+        },
+      }),
+    ]);
+  });
+
   it("queues real L material and hides a P correction until reveal", () => {
     const events = [
       ...captureEvents(1, "lookup", "R"),

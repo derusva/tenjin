@@ -1,9 +1,15 @@
 import type { HybridLogicalClock } from "@tenjin/core";
-import type { ContextRecord, LedgerRepository } from "@tenjin/storage-indexeddb";
+import type {
+  ContextImageRecord,
+  ContextRecord,
+  LedgerRepository,
+} from "@tenjin/storage-indexeddb";
 import { describe, expect, it } from "vitest";
 
 import {
   createCapture,
+  IMAGE_ONLY_CAPTURE_ORIGINAL,
+  type CaptureContextHashInput,
   type CaptureCommand,
   type CaptureDependencies,
   type CaptureTransaction,
@@ -13,10 +19,7 @@ const CAPTURED_AT = "2026-07-11T08:15:30.000Z";
 
 interface DependencyHarness {
   readonly dependencies: CaptureDependencies;
-  readonly hashedContexts: Array<{
-    original: string;
-    corrected?: string;
-  }>;
+  readonly hashedContexts: CaptureContextHashInput[];
   readonly nowCalls: () => number;
 }
 
@@ -26,10 +29,7 @@ function createDependencyHarness(): DependencyHarness {
     item: 0,
     event: 0,
   };
-  const hashedContexts: Array<{
-    original: string;
-    corrected?: string;
-  }> = [];
+  const hashedContexts: CaptureContextHashInput[] = [];
   let sequence = 0;
   let nowCallCount = 0;
 
@@ -63,6 +63,14 @@ function createDependencyHarness(): DependencyHarness {
     nowCalls: () => nowCallCount,
   };
 }
+
+const IMAGE = {
+  blob: new Blob(["png"], { type: "image/png" }),
+  mediaType: "image/png",
+  name: "lesson.png",
+  byteLength: 3,
+  sha256: "ab".repeat(32),
+} as const satisfies ContextImageRecord;
 
 function expectRepositoryCompatible(
   repository: Pick<LedgerRepository, "appendCapture">,
@@ -220,6 +228,72 @@ describe("createCapture", () => {
       { original: "聞き取れない" },
     ]);
     expect(harness.nowCalls()).toBe(1);
+  });
+
+  it("keeps a pure image filename in context while promoting an answered image without leaking the name to events", async () => {
+    const harness = createDependencyHarness();
+
+    const transaction = await createCapture(
+      {
+        type: "lookup",
+        original: "   ",
+        answer: "  只在此处使用的解释  ",
+        image: IMAGE,
+      },
+      harness.dependencies,
+    );
+
+    expect(transaction.promoted).toBe(true);
+    expect(transaction.context).toEqual({
+      hash: "sha256:context-1",
+      original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+      answer: "只在此处使用的解释",
+      image: IMAGE,
+      createdAt: CAPTURED_AT,
+    });
+    expect(harness.hashedContexts).toEqual([
+      {
+        original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+        answer: "只在此处使用的解释",
+        imageSha256: IMAGE.sha256,
+      },
+    ]);
+    expect(transaction.events.map((event) => event.kind)).toEqual([
+      "capture_created",
+      "item_created",
+      "lookup_observed",
+    ]);
+    expect(transaction.events[1]).toMatchObject({
+      payload: {
+        display: IMAGE_ONLY_CAPTURE_ORIGINAL,
+        identityKey: `image:${IMAGE.sha256}`,
+        targetChannels: ["R"],
+      },
+    });
+    expect(JSON.stringify(transaction.events)).not.toContain("lesson.png");
+  });
+
+  it("keeps an unanswered pure image as capture-only material", async () => {
+    const harness = createDependencyHarness();
+
+    const transaction = await createCapture(
+      {
+        type: "lookup",
+        original: "",
+        image: IMAGE,
+      },
+      harness.dependencies,
+    );
+
+    expect(transaction.promoted).toBe(false);
+    expect(transaction.events.map((event) => event.kind)).toEqual([
+      "capture_created",
+    ]);
+    expect(transaction.context).toMatchObject({
+      original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+      image: IMAGE,
+    });
+    expect(JSON.stringify(transaction.events)).not.toContain("lesson.png");
   });
 
   it("uses the correction for the context, P item, and observation chain", async () => {

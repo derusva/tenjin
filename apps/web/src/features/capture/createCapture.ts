@@ -8,25 +8,39 @@ import {
   type LookupObservedEvent,
   type ProductionCorrectionObservedEvent,
 } from "@tenjin/core";
-import type { ContextRecord } from "@tenjin/storage-indexeddb";
+import type {
+  ContextImageRecord,
+  ContextRecord,
+} from "@tenjin/storage-indexeddb";
 
 export type CaptureCommand =
   | {
       readonly type: "lookup";
       readonly original: string;
+      readonly answer?: string;
+      readonly image?: ContextImageRecord;
       readonly captureDurationMs?: number;
     }
   | {
       readonly type: "listening_miss";
       readonly original: string;
+      readonly image?: ContextImageRecord;
       readonly captureDurationMs?: number;
     }
   | {
       readonly type: "production_correction";
       readonly original: string;
       readonly corrected?: string;
+      readonly image?: ContextImageRecord;
       readonly captureDurationMs?: number;
     };
+
+export interface CaptureContextHashInput {
+  readonly original: string;
+  readonly corrected?: string;
+  readonly answer?: string;
+  readonly imageSha256?: string;
+}
 
 export interface CaptureDependencies {
   readonly deviceId: string;
@@ -36,10 +50,7 @@ export interface CaptureDependencies {
     readonly seq: number;
     readonly hlc: HybridLogicalClock;
   };
-  readonly hashContext: (context: {
-    readonly original: string;
-    readonly corrected?: string;
-  }) => Promise<string>;
+  readonly hashContext: (context: CaptureContextHashInput) => Promise<string>;
 }
 
 export interface CaptureTransaction {
@@ -47,6 +58,8 @@ export interface CaptureTransaction {
   readonly context: ContextRecord;
   readonly promoted: boolean;
 }
+
+export const IMAGE_ONLY_CAPTURE_ORIGINAL = "图片记录";
 
 interface CommonEventFields {
   readonly schemaVersion: 1;
@@ -87,7 +100,11 @@ export async function createCapture(
     throw new TypeError("deviceId must be a non-empty string");
   }
 
-  const original = command.original.trim();
+  const image = command.image;
+  const userOriginal = command.original.trim();
+  const imageOnly = userOriginal.length === 0 && image !== undefined;
+  const original =
+    userOriginal || (imageOnly ? IMAGE_ONLY_CAPTURE_ORIGINAL : "");
   if (original.length === 0) {
     throw new TypeError("original must be a non-empty string");
   }
@@ -96,13 +113,24 @@ export async function createCapture(
     command.type === "production_correction"
       ? command.corrected?.trim() || undefined
       : undefined;
+  const answer =
+    command.type === "lookup"
+      ? command.answer?.trim() || undefined
+      : undefined;
   const timestamp = dependencies.now().toISOString();
-  const contextInput =
-    corrected === undefined ? { original } : { original, corrected };
-  const contextHash = await dependencies.hashContext(contextInput);
+  const contextHashInput: CaptureContextHashInput = {
+    original,
+    ...(corrected === undefined ? {} : { corrected }),
+    ...(answer === undefined ? {} : { answer }),
+    ...(image === undefined ? {} : { imageSha256: image.sha256 }),
+  };
+  const contextHash = await dependencies.hashContext(contextHashInput);
   const context: ContextRecord = {
     hash: contextHash,
-    ...contextInput,
+    original,
+    ...(corrected === undefined ? {} : { corrected }),
+    ...(answer === undefined ? {} : { answer }),
+    ...(image === undefined ? {} : { image }),
     createdAt: timestamp,
   };
   const captureId = dependencies.nextId("capture");
@@ -122,7 +150,11 @@ export async function createCapture(
   } satisfies CaptureCreatedEvent;
   const events: Event[] = [captureCreated];
 
-  if (command.type === "production_correction" && corrected === undefined) {
+  if (
+    (command.type === "production_correction" && corrected === undefined) ||
+    (imageOnly && command.type === "listening_miss") ||
+    (imageOnly && command.type === "lookup" && answer === undefined)
+  ) {
     return {
       events,
       context,
@@ -130,7 +162,8 @@ export async function createCapture(
     };
   }
 
-  const display = corrected ?? original;
+  const display =
+    corrected ?? (imageOnly ? IMAGE_ONLY_CAPTURE_ORIGINAL : original);
   const itemId = dependencies.nextId("item");
   const targetChannels =
     command.type === "lookup"
@@ -146,7 +179,10 @@ export async function createCapture(
     refs: [captureCreated.eventId],
     payload: {
       display,
-      identityKey: normalizeIdentity(display),
+      identityKey:
+        imageOnly && command.type === "lookup"
+          ? `image:${image.sha256}`
+          : normalizeIdentity(display),
       targetChannels,
     },
   } satisfies ItemCreatedEvent;

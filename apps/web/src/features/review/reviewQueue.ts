@@ -7,6 +7,7 @@ import {
   type ReviewItem,
 } from "@tenjin/core";
 import type {
+  ContextImageRecord,
   ContextRecord,
   LedgerSnapshot,
 } from "@tenjin/storage-indexeddb";
@@ -18,11 +19,13 @@ export interface ReviewReveal {
 
 export interface ReviewPresentation extends ReviewItem {
   readonly prompt: string;
+  readonly promptImage?: ContextImageRecord;
   readonly reveal: ReviewReveal | undefined;
 }
 
 interface ReviewMaterial {
   readonly prompt: string;
+  readonly promptImage?: ContextImageRecord;
   readonly reveal: ReviewReveal | undefined;
 }
 
@@ -117,11 +120,32 @@ function collectReviewMaterials(
     }
 
     if (
+      capture.payload.captureType === "lookup" &&
+      event.payload.targetChannels.includes("R") &&
+      context.answer !== undefined
+    ) {
+      addMaterial(event.itemId, "R", {
+        prompt: context.original,
+        ...(context.image === undefined
+          ? {}
+          : { promptImage: context.image }),
+        reveal: {
+          label: "查到的意思 / 解释",
+          text: context.answer,
+        },
+      });
+      continue;
+    }
+
+    if (
       capture.payload.captureType === "listening_miss" &&
       event.payload.targetChannels.includes("L")
     ) {
       addMaterial(event.itemId, "L", {
         prompt: context.original,
+        ...(context.image === undefined
+          ? {}
+          : { promptImage: context.image }),
         reveal: undefined,
       });
       continue;
@@ -134,6 +158,9 @@ function collectReviewMaterials(
     ) {
       addMaterial(event.itemId, "P", {
         prompt: context.original,
+        ...(context.image === undefined
+          ? {}
+          : { promptImage: context.image }),
         reveal: {
           label: "纠正后的表达",
           text: context.corrected,
@@ -184,6 +211,9 @@ export function buildReviewQueue(
             {
               ...reviewItem,
               prompt: material.prompt,
+              ...(material.promptImage === undefined
+                ? {}
+                : { promptImage: material.promptImage }),
               reveal: material.reveal,
             },
           ];

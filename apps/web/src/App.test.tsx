@@ -1,7 +1,10 @@
 import "fake-indexeddb/auto";
 
+// @ts-expect-error Vitest runs in Node, while the production web tsconfig omits Node globals.
+import { Blob as NodeBlob } from "node:buffer";
 import {
   openLedgerRepository,
+  type ContextImageRecord,
   type LedgerRepository,
   type LedgerSnapshot,
 } from "@tenjin/storage-indexeddb";
@@ -10,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { App } from "./App.js";
+import { IMAGE_ONLY_CAPTURE_ORIGINAL } from "./features/capture/createCapture.js";
 import {
   createLedgerRuntime,
   type LedgerRuntime,
@@ -792,6 +796,102 @@ describe("App", () => {
       await expect(harness.repository.readSnapshot()).resolves.toMatchObject({
         events: expect.any(Array),
       });
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("persists a pure image, shows it in R review, and restores its recent thumbnail after remount", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const image = {
+      blob: new NodeBlob(["png"], { type: "image/png" }),
+      mediaType: "image/png",
+      name: "lesson.png",
+      byteLength: 3,
+      sha256:
+        "8f8cbb7dcf46e0bc7d53265749a6c17d116093a6ba95e442764060c76fd4a86c",
+    } as const satisfies ContextImageRecord;
+    const prepareImage = vi.fn(async () => image);
+    let view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        prepareImage={prepareImage}
+      />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+      await user.upload(
+        screen.getByLabelText("选择图片"),
+        new File(["png"], "lesson.png", { type: "image/png" }),
+      );
+      await screen.findByRole("img", {
+        name: "所选图片预览：lesson.png",
+      });
+      await user.type(
+        screen.getByRole("textbox", {
+          name: "查到的意思 / 解释（可选）",
+        }),
+        "课程截图的解释",
+      );
+      await user.click(screen.getByRole("button", { name: "记下来" }));
+
+      const recent = await screen.findByRole("region", { name: "最近记录" });
+      expect(
+        await within(recent).findByRole("img", {
+          name: "最近记录图片：lesson.png",
+        }),
+      ).toBeInTheDocument();
+      expect(
+        within(recent).getByRole("heading", { name: "lesson.png" }),
+      ).toBeInTheDocument();
+
+      const storedContext = (await harness.repository.readSnapshot()).contexts[0];
+      expect(storedContext).toMatchObject({
+        original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+        answer: "课程截图的解释",
+        image: {
+          mediaType: "image/png",
+          name: "lesson.png",
+          byteLength: 3,
+          sha256: image.sha256,
+        },
+      });
+      expect(Object.prototype.toString.call(storedContext?.image?.blob)).toBe(
+        "[object Blob]",
+      );
+
+      await user.click(screen.getByRole("button", { name: "复习 5 条" }));
+      expect(
+        await screen.findByRole("img", {
+          name: "复习图片：lesson.png",
+        }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText("课程截图的解释")).not.toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "揭示" }));
+      expect(screen.getByText("课程截图的解释")).toBeInTheDocument();
+
+      view.unmount();
+      view = render(
+        <App
+          repository={harness.repository}
+          runtime={harness.runtime}
+          prepareImage={prepareImage}
+        />,
+      );
+
+      const restoredRecent = await screen.findByRole("region", {
+        name: "最近记录",
+      });
+      expect(
+        await within(restoredRecent).findByRole("img", {
+          name: "最近记录图片：lesson.png",
+        }),
+      ).toBeInTheDocument();
     } finally {
       view.unmount();
       harness.repository.close();

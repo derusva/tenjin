@@ -2,7 +2,10 @@ import type {
   CaptureCreatedEvent,
   LearningChannel,
 } from "@tenjin/core";
-import type { LedgerRepository } from "@tenjin/storage-indexeddb";
+import type {
+  ContextImageRecord,
+  LedgerRepository,
+} from "@tenjin/storage-indexeddb";
 import { useEffect, useRef, useState } from "react";
 
 import {
@@ -18,7 +21,11 @@ import {
   CaptureComposer,
   type CaptureDraft,
 } from "./features/capture/CaptureComposer.js";
-import type { CaptureCommand } from "./features/capture/createCapture.js";
+import { LocalImagePreview } from "./features/capture/LocalImagePreview.js";
+import {
+  IMAGE_ONLY_CAPTURE_ORIGINAL,
+  type CaptureCommand,
+} from "./features/capture/createCapture.js";
 import type {
   LedgerRuntime,
   VerificationResult,
@@ -35,6 +42,7 @@ export interface AppProps {
   readonly repository: LedgerRepository;
   readonly runtime: LedgerRuntime;
   readonly storagePersistence?: StoragePersistenceStatus;
+  readonly prepareImage?: (file: File) => Promise<ContextImageRecord>;
 }
 
 type AppView = "record" | "review" | "search" | "data";
@@ -89,6 +97,7 @@ export function App({
   repository,
   runtime,
   storagePersistence = "unsupported",
+  prepareImage,
 }: AppProps) {
   const ledger = useLedger({ repository, runtime });
   const [currentView, setCurrentView] = useState<AppView>("record");
@@ -100,6 +109,8 @@ export function App({
     captureType: "lookup",
     original: "",
     corrected: "",
+    answer: "",
+    image: undefined,
   });
   const [captureSaving, setCaptureSaving] = useState(false);
   const [reviewSaving, setReviewSaving] = useState(false);
@@ -306,6 +317,7 @@ export function App({
           draft={captureDraft}
           onDraftChange={setCaptureDraft}
           onSave={saveCapture}
+          {...(prepareImage === undefined ? {} : { prepareImage })}
         />
         <section className="quick-actions" aria-label="记录操作">
           <button
@@ -335,14 +347,26 @@ export function App({
             <ul className="recent-list">
               {ledger.recentEntries.map((entry) => {
                 const channel = recentChannels.get(entry.captureId);
+                const imageOnly =
+                  entry.context.image !== undefined &&
+                  entry.context.original === IMAGE_ONLY_CAPTURE_ORIGINAL;
                 return (
                   <li key={entry.captureId}>
                     <article className="recent-row">
+                      {entry.context.image === undefined ? null : (
+                        <LocalImagePreview
+                          className="recent-image-thumbnail"
+                          blob={entry.context.image.blob}
+                          alt={`最近记录图片：${entry.context.image.name}`}
+                        />
+                      )}
                       <div className="recent-copy">
                         <h3>
-                          {entry.display ??
-                            entry.context.corrected ??
-                            entry.context.original}
+                          {imageOnly
+                            ? entry.context.image!.name
+                            : (entry.display ??
+                              entry.context.corrected ??
+                              entry.context.original)}
                         </h3>
                         <p>{entry.context.original}</p>
                         <time dateTime={entry.occurredAt}>

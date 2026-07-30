@@ -2,6 +2,7 @@ import type { HybridLogicalClock, LearningChannel } from "@tenjin/core";
 import type { EventCoordinate } from "@tenjin/storage-indexeddb";
 import { describe, expect, it, vi } from "vitest";
 
+import { IMAGE_ONLY_CAPTURE_ORIGINAL } from "../capture/createCapture.js";
 import {
   createLedgerRuntime,
   type LedgerRuntimeOptions,
@@ -167,6 +168,43 @@ describe("createLedgerRuntime", () => {
       JSON.stringify({ original: "話すです", corrected: "話します" }),
     ]);
     expect(transaction.context.hash).toBe("sha256:abcdef0123");
+  });
+
+  it("hashes lookup answer and image SHA-256 in deterministic property order", async () => {
+    const { digestInputs, runtime } = runtimeHarness({
+      digests: ["F00D"],
+    });
+    const imageSha256 = "ab".repeat(32);
+
+    const transaction = await runtime.createCapture({
+      type: "lookup",
+      original: "",
+      answer: "在当前语境中的意思",
+      image: {
+        blob: new Blob(["png"], { type: "image/png" }),
+        mediaType: "image/png",
+        name: "lesson.png",
+        byteLength: 3,
+        sha256: imageSha256,
+      },
+    });
+
+    expect(digestInputs).toEqual([
+      JSON.stringify({
+        original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+        answer: "在当前语境中的意思",
+        imageSha256,
+      }),
+    ]);
+    expect(transaction.context).toMatchObject({
+      hash: "sha256:f00d",
+      original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+      answer: "在当前语境中的意思",
+      image: {
+        name: "lesson.png",
+        sha256: imageSha256,
+      },
+    });
   });
 
   it("reserves only one coordinate for an unpromoted correction capture", async () => {
