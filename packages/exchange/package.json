@@ -1,0 +1,26 @@
+{
+  "name": "@tenjin/exchange",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "pretest": "pnpm --filter @tenjin/core build",
+    "test": "vitest run",
+    "pretypecheck": "pnpm --filter @tenjin/core build",
+    "typecheck": "tsc --noEmit",
+    "prebuild": "pnpm --filter @tenjin/core build",
+    "build": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "@tenjin/core": "workspace:*",
+    "fflate": "^0.8.2"
+  }
+}
