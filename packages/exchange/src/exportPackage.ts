@@ -38,15 +38,27 @@ const HASH_PREFIX = "sha256:";
  * the same bytes. fflate defaults to `Date.now()`, which would make every
  * export differ.
  *
- * It is a `Date` built from local calendar fields rather than a number of
- * milliseconds, for two reasons. A zip stores a DOS date, which only covers
- * 1980-2099, so `mtime: 0` (the Unix epoch) is rejected outright. And fflate
- * reads the fields back with local-time getters (`getFullYear`, `getMonth`,
- * ...), so a fixed epoch number would still encode differently in different
- * timezones; local fields round-trip to themselves everywhere. Midday avoids
- * the timezones whose DST transition removes local midnight.
+ * Two separate traps are encoded in this one value.
+ *
+ * 1. A zip stores a DOS date, which only covers 1980-2099. `mtime: 0` (the
+ *    Unix epoch, 1970) is not merely non-deterministic, it is rejected
+ *    outright - fflate throws "date not in range 1980-2099".
+ * 2. fflate reads the fields back with local-time getters (`getFullYear`,
+ *    `getMonth`, `getDate`, `getHours`, ...). A fixed number of milliseconds
+ *    would therefore still encode different bytes in different timezones,
+ *    silently breaking determinism across machines while looking fine on the
+ *    machine that wrote the test. A `Date` built from local calendar fields
+ *    round-trips to those same fields everywhere.
+ *
+ * Midday rather than midnight avoids the timezones whose DST transition
+ * removes local midnight entirely.
+ *
+ * Exported so that exportPackage.test.ts can pin the calendar fields. The two
+ * byte-identical tests cannot catch a regression here on their own: this
+ * constant is evaluated once per process, and DOS timestamps have 2-second
+ * resolution, so even a live clock would let them pass.
  */
-const ZIP_ENTRY_MTIME = new Date(1980, 0, 1, 12, 0, 0, 0);
+export const ZIP_ENTRY_MTIME = new Date(1980, 0, 1, 12, 0, 0, 0);
 
 function hashToEntryName(hash: string): string {
   if (!hash.startsWith(HASH_PREFIX)) {
@@ -103,8 +115,18 @@ export function exportLedgerPackage(
     "redactions.jsonl": [strToU8(""), { mtime: ZIP_ENTRY_MTIME }],
   };
 
+  const seenHashes = new Set<string>();
   for (const context of contexts) {
     const hex = hashToEntryName(context.hash);
+    // Two contexts sharing a hash would collapse onto one zip key while
+    // contextCount still counts the input array, leaving the manifest claiming
+    // more contexts than the package holds. Contexts are content-addressed and
+    // the store is keyed by hash, so this can only mean an upstream bug; fail
+    // loudly rather than emit a package a restorer would judge corrupt.
+    if (seenHashes.has(context.hash)) {
+      throw new TypeError(`duplicate context hash: ${context.hash}`);
+    }
+    seenHashes.add(context.hash);
     files[`contexts/${hex}.json`] = [
       strToU8(canonicalJson(contextMetadata(context))),
       { mtime: ZIP_ENTRY_MTIME },
