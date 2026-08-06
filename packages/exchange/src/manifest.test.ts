@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildManifest } from "./manifest.js";
+import { buildManifest, type BuildManifestInput } from "./manifest.js";
 
 const baseInput = {
   mode: "full-backup" as const,
@@ -26,7 +26,27 @@ describe("buildManifest", () => {
   });
 
   it("stamps the only mode this version can produce", () => {
+    expect(() => buildManifest(baseInput)).not.toThrow();
     expect(buildManifest(baseInput).mode).toBe("full-backup");
+  });
+
+  it("rejects a mode this version cannot honour, naming it", () => {
+    // `LedgerPackageMode` is a compile-time literal and evaporates at runtime,
+    // so nothing stopped a JavaScript caller - or a `JSON.parse`d config - from
+    // asking for the deferred abstract mode. The result was a package whose
+    // manifest claimed `mode: "abstract-exchange"` while `contexts/*.json` sat
+    // right beside it carrying the source text: exactly the artefact the
+    // deferral exists to prevent a restorer from ever trusting.
+    //
+    // buildManifest runs before any entry is assembled, so it is the single
+    // choke point where an unhonourable mode can still be refused for free.
+    const rejected = { ...baseInput, mode: "abstract-exchange" };
+    expect(() => buildManifest(rejected as BuildManifestInput)).toThrow(
+      TypeError,
+    );
+    expect(() => buildManifest(rejected as BuildManifestInput)).toThrow(
+      /abstract-exchange/,
+    );
   });
 
   it("carries the derived watermark through unchanged", () => {

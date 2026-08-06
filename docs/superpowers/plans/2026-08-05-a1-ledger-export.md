@@ -1086,20 +1086,22 @@ export function exportLedgerPackage(
     events.map((event) => canonicalJson(event)).join("\n") +
     (events.length > 0 ? "\n" : "");
 
-  const files: Record<string, [Uint8Array, { mtime: number }]> = {
-    "manifest.json": [strToU8(canonicalJson(manifest)), { mtime: 0 }],
-    "events.jsonl": [strToU8(eventsJsonl), { mtime: 0 }],
-    "redactions.jsonl": [strToU8(""), { mtime: 0 }],
+  // 每次导出内部现构造，不提到模块级常量——理由见下方说明。
+  const mtime = new Date(1980, 0, 1, 12, 0, 0, 0);
+  const files: Record<string, [Uint8Array, { mtime: Date }]> = {
+    "manifest.json": [strToU8(canonicalJson(manifest)), { mtime }],
+    "events.jsonl": [strToU8(eventsJsonl), { mtime }],
+    "redactions.jsonl": [strToU8(""), { mtime }],
   };
 
   for (const context of contexts) {
     const hex = hashToEntryName(context.hash);
     files[`contexts/${hex}.json`] = [
       strToU8(canonicalJson(contextMetadata(context))),
-      { mtime: 0 },
+      { mtime },
     ];
     if (context.image !== undefined) {
-      files[`contexts/${hex}.image`] = [context.image.bytes, { mtime: 0 }];
+      files[`contexts/${hex}.image`] = [context.image.bytes, { mtime }];
     }
   }
 
@@ -1107,7 +1109,15 @@ export function exportLedgerPackage(
 }
 ```
 
-若 `mtime: 0` 没能让两次导出逐字节相同，说明 fflate 在该位置写入了当前时间——此时把 zip 选项调整到能让 Step 1 的「byte-identical」两个测试变绿为止，**不要放宽那两个测试**。字节确定性是后续等价验证与摘要辅助断言的前提。
+这里有两个坑，都已在落地实现中踩实并修掉。
+
+**其一：`mtime: 0` 不是「可能不确定」，而是直接抛错。** zip 存的是 DOS 日期，有效范围只有 1980–2099，Unix 纪元（1970）不在其中，fflate 抛 `date not in range 1980-2099`。所以固定值取 `new Date(1980, 0, 1, 12, 0, 0, 0)`；取正午而非午夜，是为了避开个别时区 DST 直接抹掉本地午夜的情况。
+
+**其二：这个 `Date` 必须在每次导出内部现构造，绝不能提到模块级常量。** `Date` 存的是绝对时刻，而 fflate 编码 DOS 字段时读的是**本地日历 getter**（`getFullYear` / `getMonth` / `getHours`…）；两者只有在**同一时区内构造并编码**才互相抵消。模块级常量会把「加载那一刻所在时区」冻进一个绝对时刻，进程之后换到别的时区就编码出不同字节——在更西的时区甚至读回 1979、导出**直接抛错**。实测同一进程、同一个在 UTC+8 下构造的模块级常量：`UTC` 与 `Asia/Tokyo` 产出两个不同的包摘要，`America/Los_Angeles` 抛 `date not in range 1980-2099`。对应的真实场景是「在日本做完备份，把设备带到美西，PWA 一直没重启」。改成每次导出现构造后，同一输入在这三个时区产出的包字节完全一致。
+
+字节确定性是后续等价验证与摘要辅助断言的前提；若两次导出仍不逐字节相同，调实现直到「byte-identical」测试变绿为止，**不要放宽那两个测试**。另注意：断言「常量的日历字段对不对」是**无效测试**——把常量留着、调用点改成 `new Date()`，它照样绿。要断言就断言**产出字节里的 DOS 字段**。
+
+> **本代码块是计划当时的草案，不等于最终实现。** 除上面的 `mtime` 外，落地版还在三处收紧（以 `packages/exchange/src/` 为准）：① `buildManifest` 增加了 `mode` 的运行时白名单——`LedgerPackageMode` 是编译期字面量，运行时拦不住 `"abstract-exchange"`，而抽象模式正因为兑现不了「不携带原文」才暂缓；② `ExportContext` 去掉了预留的 `focus`，`contextMetadata` 改为按 schemaVersion 1 的**封闭字段表**显式构造，遇未知字段抛错而非静默丢弃（备份路径静默丢字段＝丢数据）；③ 摘要形状严格校验：context hash 为 `sha256:` + 64 位小写十六进制，图片 `sha256` 为**裸** 64 位小写十六进制、无前缀。
 
 `packages/exchange/src/index.ts` 追加：
 

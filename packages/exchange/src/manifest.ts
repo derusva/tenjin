@@ -45,9 +45,26 @@ export interface BuildManifestInput {
 
 const CANONICAL_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
+/**
+ * The modes this version can actually honour, as runtime data.
+ *
+ * `LedgerPackageMode` is erased at compile time, so on its own it stops nothing
+ * - a JavaScript caller, or a mode read out of persisted JSON, could ask for
+ * the deferred `"abstract-exchange"` and get a package whose manifest made a
+ * promise the bytes beside it broke. This list is checked before any entry is
+ * assembled, which makes buildManifest the one place such a package can still
+ * be refused rather than written.
+ */
+const SUPPORTED_MODES: readonly string[] = ["full-backup"];
+
 export function buildManifest(
   input: BuildManifestInput,
 ): LedgerPackageManifest {
+  if (!SUPPORTED_MODES.includes(input.mode)) {
+    throw new TypeError(
+      `mode must be one of ${SUPPORTED_MODES.join(", ")}, received ${JSON.stringify(input.mode)}`,
+    );
+  }
   if (input.exportedByDeviceId.trim().length === 0) {
     throw new TypeError("exportedByDeviceId must be a non-empty string");
   }

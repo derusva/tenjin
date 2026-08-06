@@ -13,12 +13,19 @@ export interface ExportContextImage {
   readonly bytes: Uint8Array;
 }
 
+/**
+ * Mirrors the production `ContextRecord` exactly - no more, no less.
+ *
+ * A `focus` field used to be pre-reserved here. It is gone: nothing implemented
+ * it, and landing it for real changes what a context hash covers, i.e. content
+ * identity. That has to ride a schemaVersion bump, not arrive quietly inside
+ * v1 packages.
+ */
 export interface ExportContext {
   readonly hash: string;
   readonly original: string;
   readonly corrected?: string;
   readonly answer?: string;
-  readonly focus?: string;
   readonly image?: ExportContextImage;
   readonly createdAt: string;
 }
@@ -34,6 +41,25 @@ export interface ExportLedgerPackageInput {
 const HASH_PREFIX = "sha256:";
 
 /**
+ * The two digest shapes this package accepts, and they are NOT the same shape.
+ *
+ * - A context hash is `sha256:` followed by exactly 64 lowercase hex, because
+ *   that is what `hashContext` produces in
+ *   `apps/web/src/features/ledger/ledgerRuntime.ts`.
+ * - An image digest is a BARE 64-hex string with no prefix, because
+ *   `packages/storage-indexeddb/src/repository.ts` validates it against
+ *   /^[a-f0-9]{64}$/ and compares it directly to a `crypto.subtle` digest.
+ *
+ * Length is the part that matters most. A short "digest" is an identity no
+ * other component of the system could ever produce, so accepting one lets a
+ * package into the world that no restorer can reconcile with the store it
+ * came from. A prefixed image digest is likewise guaranteed never to match the
+ * bytes it describes.
+ */
+const CONTEXT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const IMAGE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
+
+/**
  * The fixed entry timestamp, so that exporting the same ledger twice produces
  * the same bytes. fflate defaults to `Date.now()`, which would make every
  * export differ.
@@ -44,45 +70,129 @@ const HASH_PREFIX = "sha256:";
  *    Unix epoch, 1970) is not merely non-deterministic, it is rejected
  *    outright - fflate throws "date not in range 1980-2099".
  * 2. fflate reads the fields back with local-time getters (`getFullYear`,
- *    `getMonth`, `getDate`, `getHours`, ...). A fixed number of milliseconds
- *    would therefore still encode different bytes in different timezones,
- *    silently breaking determinism across machines while looking fine on the
- *    machine that wrote the test. A `Date` built from local calendar fields
- *    round-trips to those same fields everywhere.
+ *    `getMonth`, `getDate`, `getHours`, ...) while a `Date` stores an absolute
+ *    instant. The two only cancel when construction and encoding happen in the
+ *    same timezone.
+ *
+ * Hence: built fresh inside every export, never once at module load. A
+ * module-scope constant freezes the instant that the *loading* machine's
+ * timezone implied, so a process that later runs in another zone encodes
+ * different bytes - and westward of the loading zone it reads back as 1979 and
+ * the export throws. Measured, one process, same constant: UTC and Asia/Tokyo
+ * produced two different package digests, and America/Los_Angeles threw. The
+ * real case is a device carried across timezones with the PWA never restarted.
  *
  * Midday rather than midnight avoids the timezones whose DST transition
  * removes local midnight entirely.
  *
- * Exported so that exportPackage.test.ts can pin the calendar fields. The two
- * byte-identical tests cannot catch a regression here on their own: this
- * constant is evaluated once per process, and DOS timestamps have 2-second
- * resolution, so even a live clock would let them pass.
+ * Deliberately NOT exported: a shared mutable `Date` is not public API, and a
+ * test that reads its calendar fields proves only that the constant looks
+ * right, not that the exporter uses it. exportPackage.test.ts asserts the DOS
+ * fields in the real output bytes instead.
  */
-export const ZIP_ENTRY_MTIME = new Date(1980, 0, 1, 12, 0, 0, 0);
+function zipEntryMtime(): Date {
+  return new Date(1980, 0, 1, 12, 0, 0, 0);
+}
 
 function hashToEntryName(hash: string): string {
-  if (!hash.startsWith(HASH_PREFIX)) {
-    throw new TypeError(`context hash must start with ${HASH_PREFIX}: ${hash}`);
+  if (!CONTEXT_HASH_PATTERN.test(hash)) {
+    throw new TypeError(
+      `context hash must be ${HASH_PREFIX} followed by 64 lowercase hexadecimal characters, received ${hash}`,
+    );
   }
-  const hex = hash.slice(HASH_PREFIX.length);
-  if (!/^[0-9a-f]+$/.test(hex)) {
-    throw new TypeError(`context hash must be lowercase hexadecimal: ${hash}`);
+  return hash.slice(HASH_PREFIX.length);
+}
+
+/**
+ * schemaVersion 1 has a CLOSED field list, enumerated here rather than derived
+ * from a spread. These names are the production `ContextRecord` fields.
+ */
+const CONTEXT_FIELDS: readonly string[] = [
+  "hash",
+  "original",
+  "corrected",
+  "answer",
+  "image",
+  "createdAt",
+];
+
+const CONTEXT_IMAGE_FIELDS: readonly string[] = [
+  "mediaType",
+  "name",
+  "byteLength",
+  "sha256",
+  "bytes",
+];
+
+/**
+ * Rejects fields this schema version does not know about.
+ *
+ * Throwing rather than dropping is the deliberate choice. This is a BACKUP
+ * path: a caller that hands the exporter a field and gets a package back
+ * without it has silently lost data, and will not find out until a restore. An
+ * unknown field means the caller and this schema version disagree about what a
+ * context is, which is a bug in one of them - and the bump that resolves it is
+ * a schemaVersion bump, because these objects are content-addressed and an
+ * extra field manufactures two "same hash, different content" records.
+ */
+function assertNoUnknownFields(
+  value: object,
+  allowed: readonly string[],
+  subject: string,
+): void {
+  const unknown = Object.keys(value)
+    .filter((key) => !allowed.includes(key))
+    .sort();
+  if (unknown.length > 0) {
+    throw new TypeError(
+      `${subject} carries unknown field(s) ${unknown.join(", ")}; schemaVersion 1 has a closed field list, and a backup must not drop them silently`,
+    );
   }
-  return hex;
 }
 
 function contextMetadata(context: ExportContext): Record<string, unknown> {
-  const { image, ...rest } = context;
-  if (image === undefined) {
-    return { ...rest };
+  assertNoUnknownFields(context, CONTEXT_FIELDS, `context ${context.hash}`);
+
+  const metadata: Record<string, unknown> = {
+    hash: context.hash,
+    original: context.original,
+    createdAt: context.createdAt,
+  };
+  if (context.corrected !== undefined) {
+    metadata.corrected = context.corrected;
   }
-  const { bytes, ...imageRest } = image;
-  if (bytes.byteLength !== image.byteLength) {
-    throw new TypeError(
-      `context ${context.hash} declares byteLength ${image.byteLength} but carries ${bytes.byteLength} bytes`,
+  if (context.answer !== undefined) {
+    metadata.answer = context.answer;
+  }
+
+  const image = context.image;
+  if (image !== undefined) {
+    assertNoUnknownFields(
+      image,
+      CONTEXT_IMAGE_FIELDS,
+      `context ${context.hash} image`,
     );
+    if (!IMAGE_DIGEST_PATTERN.test(image.sha256)) {
+      throw new TypeError(
+        `context ${context.hash} image sha256 must be 64 lowercase hexadecimal characters with no ${HASH_PREFIX} prefix, received ${image.sha256}`,
+      );
+    }
+    if (image.bytes.byteLength !== image.byteLength) {
+      throw new TypeError(
+        `context ${context.hash} declares byteLength ${image.byteLength} but carries ${image.bytes.byteLength} bytes`,
+      );
+    }
+    // `bytes` is the payload, written as its own zip entry; only the metadata
+    // describing it belongs in the JSON.
+    metadata.image = {
+      mediaType: image.mediaType,
+      name: image.name,
+      byteLength: image.byteLength,
+      sha256: image.sha256,
+    };
   }
-  return { ...rest, image: { ...imageRest } };
+
+  return metadata;
 }
 
 export function exportLedgerPackage(
@@ -106,13 +216,11 @@ export function exportLedgerPackage(
     events.map((event) => canonicalJson(event)).join("\n") +
     (events.length > 0 ? "\n" : "");
 
+  const mtime = zipEntryMtime();
   const files: Record<string, [Uint8Array, { mtime: Date }]> = {
-    "manifest.json": [
-      strToU8(canonicalJson(manifest)),
-      { mtime: ZIP_ENTRY_MTIME },
-    ],
-    "events.jsonl": [strToU8(eventsJsonl), { mtime: ZIP_ENTRY_MTIME }],
-    "redactions.jsonl": [strToU8(""), { mtime: ZIP_ENTRY_MTIME }],
+    "manifest.json": [strToU8(canonicalJson(manifest)), { mtime }],
+    "events.jsonl": [strToU8(eventsJsonl), { mtime }],
+    "redactions.jsonl": [strToU8(""), { mtime }],
   };
 
   const seenHashes = new Set<string>();
@@ -129,13 +237,10 @@ export function exportLedgerPackage(
     seenHashes.add(context.hash);
     files[`contexts/${hex}.json`] = [
       strToU8(canonicalJson(contextMetadata(context))),
-      { mtime: ZIP_ENTRY_MTIME },
+      { mtime },
     ];
     if (context.image !== undefined) {
-      files[`contexts/${hex}.image`] = [
-        context.image.bytes,
-        { mtime: ZIP_ENTRY_MTIME },
-      ];
+      files[`contexts/${hex}.image`] = [context.image.bytes, { mtime }];
     }
   }
 

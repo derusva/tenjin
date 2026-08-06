@@ -1,12 +1,46 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { strFromU8, unzipSync } from "fflate";
 import type { Event } from "@tenjin/core";
-import { exportLedgerPackage, ZIP_ENTRY_MTIME } from "./exportPackage.js";
+import { exportLedgerPackage } from "./exportPackage.js";
 import type { ExportContext } from "./exportPackage.js";
 import { scanPackagePlaintext } from "./inspectPackage.js";
 
+/**
+ * The timezone-invariance test has to switch the process timezone, and that is
+ * the only Node global this package touches. `@tenjin/exchange` deliberately
+ * ships without `@types/node` - it must stay free of both DOM and Node runtime
+ * dependencies - so the one global the tests need is declared narrowly here
+ * rather than by pulling the whole Node typings into the package.
+ */
+declare const process: { env: { TZ?: string | undefined } };
+
 const SENTINEL_SOURCE = "SENTINEL_SOURCE_TEXT";
 const SENTINEL_ANSWER = "SENTINEL_ANSWER_TEXT";
+
+/**
+ * Digests shaped exactly like production, because a fixture that is not is a
+ * fixture that cannot catch a shape bug. The two shapes differ on purpose:
+ *
+ * - a context hash is `sha256:` + exactly 64 lowercase hex (ledgerRuntime.ts
+ *   `hashContext` returns `` `sha256:${hexadecimal.toLowerCase()}` ``);
+ * - an image digest is a BARE 64-hex string, no prefix (repository.ts checks
+ *   it against /^[a-f0-9]{64}$/ and compares it to a raw crypto.subtle digest).
+ *
+ * These particular values are real SHA-256 digests of arbitrary strings; only
+ * their shape is load-bearing. The previous fixtures were `sha256:aa` and
+ * `sha256:bb`, wrong on both length and - for the image - prefix, which is why
+ * the exporter could accept a 2-character hash unnoticed.
+ */
+const SECRET_HEX =
+  "fa1602c2b2c815e0f9f5d01ce0fbd79b879fe65b6e310e2d99e1b61d3d35ad30";
+const SECRET_HASH = `sha256:${SECRET_HEX}`;
+const SECRET_IMAGE_SHA256 =
+  "96197a8bb6129814161a81b933c8d9687e6073ff5e2582656879244b12866e68";
+const IMAGE_ONLY_HEX =
+  "ee8c102fa514835908805bc0ad4f0bfcf11b260eaa6c840089f3fb64d3e5d022";
+const IMAGE_ONLY_HASH = `sha256:${IMAGE_ONLY_HEX}`;
+const IMAGE_ONLY_SHA256 =
+  "546fca8acd597339971efe464e2e41589e0993ba68a445339247939f6d68cd20";
 
 function captureEvent(seq: number, wallTime: number): Event {
   return {
@@ -19,7 +53,7 @@ function captureEvent(seq: number, wallTime: number): Event {
     recordedAt: "2026-08-05T00:00:00.000Z",
     kind: "capture_created",
     captureId: `capture-${seq}`,
-    contextHash: "sha256:aa",
+    contextHash: SECRET_HASH,
     payload: { captureType: "lookup" },
   } as Event;
 }
@@ -50,7 +84,7 @@ function itemCreatedEvent(seq: number, wallTime: number): Event {
 }
 
 const secretContext: ExportContext = {
-  hash: "sha256:aa",
+  hash: SECRET_HASH,
   original: `${SENTINEL_SOURCE}_大丈夫、手は打ったから。`,
   answer: `${SENTINEL_ANSWER}_提前采取措施`,
   createdAt: "2026-08-05T00:00:00.000Z",
@@ -58,21 +92,21 @@ const secretContext: ExportContext = {
     mediaType: "image/png",
     name: "shot.png",
     byteLength: 4,
-    sha256: "sha256:bb",
+    sha256: SECRET_IMAGE_SHA256,
     bytes: new Uint8Array([1, 2, 3, 4]),
   },
 };
 
 function imageOnlyContext(bytes: Uint8Array): ExportContext {
   return {
-    hash: "sha256:ab",
+    hash: IMAGE_ONLY_HASH,
     original: "unrelated",
     createdAt: "2026-08-05T00:00:00.000Z",
     image: {
       mediaType: "image/png",
       name: "raw.png",
       byteLength: bytes.byteLength,
-      sha256: "sha256:cd",
+      sha256: IMAGE_ONLY_SHA256,
       bytes,
     },
   };
@@ -105,11 +139,15 @@ describe("exportLedgerPackage", () => {
 
   it("carries contexts and raw image bytes", () => {
     const entries = unzipSync(exportLedgerPackage(input));
-    expect(Object.keys(entries)).toContain("contexts/aa.json");
-    expect(entries["contexts/aa.image"]).toEqual(new Uint8Array([1, 2, 3, 4]));
-    const stored = JSON.parse(strFromU8(entries["contexts/aa.json"]!));
-    expect(stored.hash).toBe("sha256:aa");
-    expect(stored.image.sha256).toBe("sha256:bb");
+    expect(Object.keys(entries)).toContain(`contexts/${SECRET_HEX}.json`);
+    expect(entries[`contexts/${SECRET_HEX}.image`]).toEqual(
+      new Uint8Array([1, 2, 3, 4]),
+    );
+    const stored = JSON.parse(
+      strFromU8(entries[`contexts/${SECRET_HEX}.json`]!),
+    );
+    expect(stored.hash).toBe(SECRET_HASH);
+    expect(stored.image.sha256).toBe(SECRET_IMAGE_SHA256);
     expect(stored.image.bytes).toBeUndefined();
   });
 
@@ -135,21 +173,145 @@ describe("exportLedgerPackage", () => {
     expect(shuffled).toEqual(forward);
   });
 
-  it("pins the zip entry timestamp to a fixed date rather than reading a clock", () => {
-    // A live clock passes the two byte-identical tests above: the constant is
-    // evaluated once per process, and DOS timestamps only have 2-second
-    // resolution, so two successive exports agree anyway. This assertion is
-    // what actually stops a clock from creeping back in.
+  it("encodes the fixed 1980-01-01 12:00 DOS timestamp into the package bytes", () => {
+    const bytes = exportLedgerPackage(input);
+    const readU16 = (offset: number): number =>
+      bytes[offset]! | (bytes[offset + 1]! << 8);
+
+    // A zip begins with its first local file header, whose layout is:
+    // 0-3 signature "PK\x03\x04", 4-5 version needed, 6-7 flags,
+    // 8-9 method, 10-11 last-mod time, 12-13 last-mod date. Every multi-byte
+    // field is little-endian. Asserting the signature first proves the two
+    // offsets below really are being read out of a header.
+    expect(readU16(0)).toBe(0x4b50);
+    expect(readU16(2)).toBe(0x0403);
+
+    // Computed, not copied out of the output: a hardcoded hex literal would be
+    // whatever the implementation happened to emit on the day it was written.
+    const expectedDosDate = ((1980 - 1980) << 9) | (1 << 5) | 1; // 1980-01-01
+    const expectedDosTime = (12 << 11) | (0 << 5) | (0 >> 1); // 12:00:00
+    expect(readU16(10)).toBe(expectedDosTime);
+    expect(readU16(12)).toBe(expectedDosDate);
+  });
+
+  it("encodes identical bytes in every timezone", () => {
+    // A Date is an absolute instant, but fflate encodes the DOS fields with
+    // LOCAL calendar getters. A Date built once, at module load, therefore
+    // encodes differently depending on where the process is running - and
+    // westward of the construction zone it reads back as 1979 and the export
+    // throws outright. Building it per export makes construction and encoding
+    // happen in one timezone, so they cancel.
+    const zones = ["UTC", "America/Los_Angeles", "Asia/Tokyo"];
+    const originalTz = process.env.TZ;
+    // Restoring by `delete process.env.TZ` does NOT bring the system zone back
+    // in this runtime - measured: the process stayed westward and every later
+    // export in the file then threw. So capture the resolved zone name while it
+    // is still untouched and restore it by name.
+    const systemZone = new Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const baselineOffset = new Date(2020, 0, 1).getTimezoneOffset();
+    const offsets: number[] = [];
+    const packages: Uint8Array[] = [];
+    try {
+      for (const zone of zones) {
+        process.env.TZ = zone;
+        offsets.push(new Date(2020, 0, 1).getTimezoneOffset());
+        packages.push(exportLedgerPackage(input));
+      }
+    } finally {
+      process.env.TZ = originalTz ?? systemZone;
+    }
+
+    // Prove the cleanup worked, so a failure here can never be mistaken for a
+    // failure of some later test that inherited a leaked timezone.
+    expect(new Date(2020, 0, 1).getTimezoneOffset()).toBe(baselineOffset);
+
+    // Guard the guard. On a platform that ignored process.env.TZ every export
+    // would run in one timezone and the comparison below would hold
+    // unconditionally - an always-PASS check proving nothing.
+    expect(new Set(offsets).size).toBe(zones.length);
+    expect(packages).toHaveLength(zones.length);
+    expect(packages[0]!.byteLength).toBeGreaterThan(0);
+    expect(packages[1]!).toEqual(packages[0]!);
+    expect(packages[2]!).toEqual(packages[0]!);
+  });
+
+  it("does not read a live clock between two exports", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-05T12:00:00.000Z"));
+      const first = exportLedgerPackage(input);
+      // More than two seconds on purpose: DOS timestamps have 2-second
+      // resolution, so a shorter gap could not tell a clock read apart from a
+      // constant.
+      vi.advanceTimersByTime(3_000);
+      const second = exportLedgerPackage(input);
+      expect(second).toEqual(first);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("carries every field of a full context record through unchanged", () => {
+    // The metadata is built from an explicit whitelist rather than a spread, so
+    // this is the guard that the whitelist did not quietly forget an optional
+    // field. `corrected` is the one most easily lost: it is absent from the
+    // lookup fixture above.
+    const entries = unzipSync(
+      exportLedgerPackage({
+        ...input,
+        contexts: [{ ...secretContext, corrected: "corrected text" }],
+      }),
+    );
+    const stored: unknown = JSON.parse(
+      strFromU8(entries[`contexts/${SECRET_HEX}.json`]!),
+    );
+    expect(stored).toEqual({
+      hash: secretContext.hash,
+      original: secretContext.original,
+      corrected: "corrected text",
+      answer: secretContext.answer,
+      createdAt: secretContext.createdAt,
+      image: {
+        mediaType: "image/png",
+        name: "shot.png",
+        byteLength: 4,
+        sha256: secretContext.image!.sha256,
+      },
+    });
+  });
+
+  it("rejects unknown context fields instead of silently shipping them", () => {
+    // `contextMetadata` used to spread `...rest`, so whatever the caller passed
+    // landed in contexts/<hash>.json inside a schemaVersion 1 package -
+    // including the `focus` field the interface had pre-reserved. In a
+    // content-addressed layer that manufactures two objects with the same hash
+    // and different stored content.
     //
-    // The fields are read with local-time getters on purpose - that is exactly
-    // how fflate encodes them, so this pins the encoded bytes in every
-    // timezone, not just this one.
-    expect(ZIP_ENTRY_MTIME.getFullYear()).toBe(1980);
-    expect(ZIP_ENTRY_MTIME.getMonth()).toBe(0);
-    expect(ZIP_ENTRY_MTIME.getDate()).toBe(1);
-    expect(ZIP_ENTRY_MTIME.getHours()).toBe(12);
-    expect(ZIP_ENTRY_MTIME.getMinutes()).toBe(0);
-    expect(ZIP_ENTRY_MTIME.getSeconds()).toBe(0);
+    // Dropping the extras silently would be the worse cure: this is a BACKUP
+    // path, and a backup that quietly discards a field it was handed loses
+    // data. Landing `focus` for real changes hash and identity semantics and
+    // must ride a schemaVersion bump.
+    const withUnknown = { ...secretContext, focus: "手を打つ", futureField: 1 };
+    expect(() =>
+      exportLedgerPackage({ ...input, contexts: [withUnknown] }),
+    ).toThrow(TypeError);
+    expect(() =>
+      exportLedgerPackage({ ...input, contexts: [withUnknown] }),
+    ).toThrow(/focus/);
+    expect(() =>
+      exportLedgerPackage({ ...input, contexts: [withUnknown] }),
+    ).toThrow(/futureField/);
+  });
+
+  it("rejects unknown context image fields as well", () => {
+    // Same defect, one level down: the image metadata was spread too.
+    const withUnknownImage = {
+      ...secretContext,
+      image: { ...secretContext.image!, exifOrientation: 6 },
+    };
+    expect(() =>
+      exportLedgerPackage({ ...input, contexts: [withUnknownImage] }),
+    ).toThrow(/exifOrientation/);
   });
 
   it("rejects an image whose declared byteLength disagrees with its bytes", () => {
@@ -195,7 +357,57 @@ describe("exportLedgerPackage", () => {
         ...input,
         contexts: [secretContext, { ...secretContext, original: "different" }],
       }),
-    ).toThrow(/sha256:aa/);
+    ).toThrow(SECRET_HASH);
+  });
+
+  it("rejects a context hash that is not sha256 plus 64 lowercase hex", () => {
+    // `sha256:aa` is well-formed by prefix and by alphabet, and it is exactly
+    // what this suite used as a fixture until now - the exporter took it, and
+    // named a zip entry `contexts/aa.json` after it. A digest of the wrong
+    // length is not a digest; in a content-addressed layer accepting one means
+    // accepting an identity nothing else in the system could ever produce.
+    expect(() =>
+      exportLedgerPackage({
+        ...input,
+        contexts: [{ ...secretContext, hash: "sha256:aa" }],
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      exportLedgerPackage({
+        ...input,
+        contexts: [{ ...secretContext, hash: "sha256:aa" }],
+      }),
+    ).toThrow("sha256:aa");
+  });
+
+  it("rejects an image digest carrying a sha256: prefix", () => {
+    // The two digests are deliberately shaped differently. repository.ts
+    // compares `image.sha256` against a bare crypto.subtle hex digest, so a
+    // prefixed value could never match the bytes it claims to describe - it
+    // would sail through export and fail verification on restore.
+    const prefixed = `sha256:${SECRET_IMAGE_SHA256}`;
+    expect(() =>
+      exportLedgerPackage({
+        ...input,
+        contexts: [
+          {
+            ...secretContext,
+            image: { ...secretContext.image!, sha256: prefixed },
+          },
+        ],
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      exportLedgerPackage({
+        ...input,
+        contexts: [
+          {
+            ...secretContext,
+            image: { ...secretContext.image!, sha256: prefixed },
+          },
+        ],
+      }),
+    ).toThrow(prefixed);
   });
 });
 
