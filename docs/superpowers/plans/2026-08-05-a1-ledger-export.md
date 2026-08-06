@@ -1167,6 +1167,8 @@ Task 5 完成且全仓测试通过后，本计划到此为止——**停下交�
 
 **占位符扫描**：无 TBD / TODO；每个改动步骤都带完整代码与确切命令。Task 5 Step 3 关于 `mtime` 的说明是明确的失败处置指令（调实现直到测试变绿，不许放宽测试），不是占位符。
 
-**类型一致性**：`LedgerWatermark`（Task 3）被 Task 4 的 `BuildManifestInput.watermark` 与 Task 5 的 `deriveWatermark` 使用，字段名一致；`LedgerPackageMode`（Task 4，v1 为单成员字面量 `"full-backup"`）被 Task 5 的 `ExportLedgerPackageInput.mode` 复用；`ExportContext.image.bytes: Uint8Array`（Task 5）与 manifest 的 `contextCount` 无冲突；`compareHlc`（Task 3）导出备用，恢复器会用到；`scanPackagePlaintext` / `readPackageEntries`（Task 5）供下一份计划的等价验证器复用。`ExportContext` 预留了可选 `focus` 字段，与方向决策记录 §2.1 一致，但本计划不实现它的任何行为。
+**类型一致性**：`LedgerWatermark`（Task 3）被 Task 4 的 `BuildManifestInput.watermark` 与 Task 5 的 `deriveWatermark` 使用，字段名一致；`LedgerPackageMode`（Task 4，v1 为单成员字面量 `"full-backup"`）被 Task 5 的 `ExportLedgerPackageInput.mode` 复用；`ExportContext.image.bytes: Uint8Array`（Task 5）与 manifest 的 `contextCount` 无冲突；`compareHlc`（Task 3）导出备用，恢复器会用到；`scanPackagePlaintext` / `readPackageEntries`（Task 5）供下一份计划的等价验证器复用。
+
+> **本节起草时的一处判断已被推翻，保留记录以免重蹈。** 原文写的是「`ExportContext` 预留了可选 `focus` 字段，本计划不实现它的任何行为」——这是错的，落地实现里 `focus` **已被移除**（见 Step 3 后的收紧说明第 ② 条）。预留一个没有行为的字段并不是无害的：`contextMetadata` 当时用 `...rest` 展开，于是任何多余键（实测 `focus` 与 `futureField` 都会）被写进 `schemaVersion: 1` 的包，在内容寻址层制造「同 hash 不同内容」的对象。现在 `contextMetadata` 按封闭字段表显式构造、遇未知键抛错。`focus` 要落地时必须连同 hash 与 identity 语义一起升 schema，而不是先埋一个空字段。
 
 **已知的当前实现缺陷（不在本计划修，但已记录）**：`createCapture.ts:165` 把整句原文写进 `item_created.payload.display`，违反 `HANDOFF.md` §4.1「原句不进入状态字段」。这是抽象模式暂缓的直接原因，修复属 `focus` 分离工作。

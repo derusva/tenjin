@@ -218,12 +218,23 @@ describe("exportLedgerPackage", () => {
         packages.push(exportLedgerPackage(input));
       }
     } finally {
-      process.env.TZ = originalTz ?? systemZone;
+      // Write the resolved system zone back first - that is what actually
+      // refreshes the cached zone. Only then restore the variable itself to
+      // exactly what it was: on a machine where TZ was never set, leaving it
+      // defined would quietly change the environment for every later test,
+      // and an offset check cannot see that because the zone would be right.
+      process.env.TZ = systemZone;
+      if (originalTz === undefined) {
+        delete process.env.TZ;
+      } else {
+        process.env.TZ = originalTz;
+      }
     }
 
-    // Prove the cleanup worked, so a failure here can never be mistaken for a
-    // failure of some later test that inherited a leaked timezone.
+    // Prove the cleanup worked on both axes: the effective zone is back, and
+    // the variable itself is exactly what it was.
     expect(new Date(2020, 0, 1).getTimezoneOffset()).toBe(baselineOffset);
+    expect(process.env.TZ).toBe(originalTz);
 
     // Guard the guard. On a platform that ignored process.env.TZ every export
     // would run in one timezone and the comparison below would hold
