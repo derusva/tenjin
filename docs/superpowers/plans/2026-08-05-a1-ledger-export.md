@@ -271,6 +271,7 @@ function stub(
     occurredAt: "2026-08-05T00:00:00.000Z",
     recordedAt: "2026-08-05T00:00:00.000Z",
     kind: "item_created",
+    captureId: "capture-1",
     itemId: "item-1",
     payload: {
       display: "手を打つ",
@@ -279,6 +280,11 @@ function stub(
     },
   } as Event;
 }
+```
+
+> `item_created` 在信封层同时要求 `itemId` 与 `captureId`（`packages/core/src/events.ts`）。`vitest` 走 esbuild 转译、不做完整类型检查，因此只有 `tsc --noEmit` 会抓到缺字段——每个任务的 typecheck 步骤不可跳过。
+
+```ts
 
 describe("compareEventsCanonically", () => {
   it("orders by wallTime first", () => {
