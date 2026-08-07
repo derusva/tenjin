@@ -6,11 +6,11 @@
 
 **Architecture:** 三层，边界即责任。`@tenjin/exchange` 保持纯函数、无 DOM、无 IndexedDB、无 Node 依赖，负责**解包与全部校验**，产出已验证的 `LedgerRestorePlan`；`@tenjin/storage-indexeddb` 定义自己的输入类型并负责**原子写入**与**原始读取**；等价验证器住在 storage 层，复习队列构造函数由调用方注入。**exchange 与 storage 互不依赖**；两者的集成、结构兼容断言与真实摘要接线**全部落在 `apps/web` 的集成测试**里——那是唯一同时依赖两者的地方。
 
-**Tech Stack:** TypeScript（NodeNext、strict、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`verbatimModuleSyntax`）、Vitest、idb、fake-indexeddb；ZIP **写用 fflate、读用 `@zip.js/zip.js`**（见 §3.3，owner 已冻结为 B-reader-only）。
+**Tech Stack:** TypeScript（NodeNext、strict、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`verbatimModuleSyntax`）、Vitest、idb、fake-indexeddb；ZIP **写用 fflate、读用精确锁定的 `@zip.js/zip.js@2.8.34`**（见 §3.3，owner 已冻结为 B-reader-only）。
 
-**基线：** `fa4e048`。切片总定义见 [`docs/decisions/2026-08-05-a1-ledger-recovery-slice.md`](../../decisions/2026-08-05-a1-ledger-recovery-slice.md)（**v1.5**）。
+**基线：** `fa4e048`。切片总定义见 [`docs/decisions/2026-08-05-a1-ledger-recovery-slice.md`](../../decisions/2026-08-05-a1-ledger-recovery-slice.md)（**v1.6**）。
 
-**状态：计划待审；批准后方可开工。** CRC 路线已冻结（§3.3），但 **T0 硬 Gate 未通过前 T3 不得开工**。
+**状态：计划已完成修订；待用户批准 T0，批准前不得开工。** CRC 路线已冻结（§3.3）。**T0 必须独占 Phase 0；T0 全绿后才可启动 T1/T2，T2 完成后才可进入 T3，T3a 浏览器 Gate 全绿后才可进入 T4。**
 
 **交付口径（不可含糊）：** 本计划完成后只能声称 **BACKEND_READY / LIMITS_PROVISIONAL**——恢复能力在后端可用并已验证，限额仍是临时安全上限。**不得**声称"端到端恢复已交付"或"A1 完成"：§3.10 的激活状态机要到 UI 切片才落地，在那之前用户无法完成一次真实恢复。
 
@@ -25,7 +25,7 @@
 - 复习时间预算改造；教学或引导 UI；
 - `newDeviceId` 的生成与 localStorage 写入（属 UI 切片，见 §3.8、§3.10）。
 
-`packages/exchange` **新增且仅新增一个运行时依赖 `@zip.js/zip.js`**（只用于 restore 读包，见 §3.3；此前"不得新增运行时依赖"的说法随该冻结作废）。仍不得整包引入 DOM lib 或 `@types/node`，**其测试也不得 `import "node:crypto"`**（见 §3.2）——这条类型边界正是 T0 必须先验证的项目之一。
+`packages/exchange` **新增且仅新增一个运行时依赖 `@zip.js/zip.js`，精确锁定 `2.8.34`（不得用 `^` / `~`）**，只从包根入口 import，只用于 restore 读包（见 §3.3；此前"不得新增运行时依赖"的说法随该冻结作废）。仍不得整包引入 DOM lib 或 `@types/node`，**其测试也不得 `import "node:crypto"`**（见 §3.2）——这条类型边界正是 T0 必须先验证的项目之一。
 
 ---
 
@@ -38,26 +38,34 @@
 | `apps/web/src/features/ledger/ledgerRuntime.ts` | 复用 core 序列化（**仅此**） | T1 |
 | `apps/web/src/features/capture/createCapture.ts` | 复用 core 类型（**仅此**） | T1 |
 | **`packages/exchange/package.json`** | 加 `@zip.js/zip.js` 运行时依赖 | **T0** |
-| **`pnpm-lock.yaml`** | 随上一行更新（与 T11 同一文件，注意先后） | **T0**、T11 |
-| `packages/exchange/src/zipReaderProbe.test.ts` | 新建（T0 的能力探针，可在 Gate 通过后保留为回归测试） | **T0** |
+| **`pnpm-lock.yaml`** | 随依赖变更更新（同一文件会在 T0、T3a 依次修改） | **T0**、T3a |
+| `packages/exchange/src/zipRuntime.ts` + `.test.ts` | 新建 vendor 隔离层与 T0 能力探针；T3 复用 | **T0** |
+| `packages/exchange/src/zipProbeFixtures.ts` | 新建 Node/browser 共用的 byte fixtures | **T0**、T3a |
+| `packages/exchange/tsconfig.public-api.json` | 新建 ES2023-only、`skipLibCheck: false` 的消费侧 Gate | **T0** |
+| `packages/exchange/type-tests/public-api.ts` | 新建最小公共声明消费者 | **T0** |
 | `packages/exchange/src/limits.ts` + `.test.ts` | 新建 | T2 |
 | `packages/exchange/src/exportPackage.ts` | 追加导出前限额预检 | T2 |
-| `packages/exchange/src/manifest.ts` + `.test.ts` | 收紧 `exportedByDeviceId` / `exportedAt` 校验（消除 exporter↔reader 漂移，见 T4） | **T4** |
+| `packages/exchange/src/manifest.ts` + `.test.ts` | 提供 writer/reader 共用的完整 v1 shape validator | **T4** |
+| `packages/exchange/src/watermark.ts` + `.test.ts` | 改为 prototype-safe 累积并覆盖特殊 deviceId | **T4**、T7 |
 | `packages/exchange/src/decodeUtf8.ts` + `.test.ts` | 新建 | T3 |
 | `packages/exchange/src/readPackage.ts` + `.test.ts` | 新建 | T3 |
 | `packages/exchange/src/validateManifest.ts` + `.test.ts` | 新建 | T4 |
 | `packages/exchange/src/validateEvents.ts` + `.test.ts` | 新建 | T5 |
 | `packages/exchange/src/validateContexts.ts` + `.test.ts` | 新建 | T6 |
 | `packages/exchange/src/restorePlan.ts` + `.test.ts` | 新建 | T7 |
-| `packages/exchange/src/index.ts` | 追加 export | T2–T7 |
+| `packages/exchange/src/index.ts` | T0 导出冻结 adapter/QA probe API；T2–T7 追加正式 API | **T0**、T2–T7 |
 | `packages/exchange/src/negativeMatrix.test.ts` | 新建 | T12 |
 | `packages/storage-indexeddb/src/restore.ts` + `.test.ts` | 新建 | T8 |
-| `packages/storage-indexeddb/src/repository.ts` | 开放 `structurallyEqual`（package-internal）；`openLedgerRepository` 返回类型加交集 | T8、T9 |
+| `packages/storage-indexeddb/src/restoreCommit.ts` + `.test.ts` | 新建封闭 marker 类型、validator 与只读 accessor | T8、T10 |
+| `packages/storage-indexeddb/src/repository.ts` | clock union 纳入 marker；开放只读 marker accessor 与 `structurallyEqual`（package-internal）；`openLedgerRepository` 返回类型加交集 | T8、T9、T10 |
 | `packages/storage-indexeddb/src/repository.test.ts` | 追加 | T9 |
 | `packages/storage-indexeddb/src/verifyEquivalence.ts` + `.test.ts` | 新建 | T10 |
 | `packages/storage-indexeddb/src/index.ts` | 追加 export（**不含** `structurallyEqual`） | T8、T10 |
-| **`apps/web/package.json`** | 加 `@tenjin/exchange` devDependency；改三个 pre 脚本 | **T11** |
-| **`pnpm-lock.yaml`** | 随上一行更新 | **T11** |
+| **`apps/web/package.json`** | T3a 加 `@tenjin/exchange` devDependency、浏览器探针脚本，并让 `pretest` / `pretypecheck` / `prebuild` 构建 exchange；T11 只复核 | **T3a** |
+| `apps/web/zip-reader-probe.html` | 新建独立 QA 探针入口，不进入生产 PWA input | T3a |
+| `apps/web/src/zip-reader-probe-main.ts` | 新建 READY 后一次性手动触发的浏览器探针 | T3a |
+| `apps/web/vite.zip-reader-probe.config.ts` | 新建独立 Vite build 配置 | T3a |
+| `docs/qa/a1-zip-reader-browser-probe.md` | 新建 G5a/G5b 命令、环境与证据模板 | T3a |
 | `apps/web/src/features/ledger/restoreIntegration.test.ts` | 新建（**仅测试**） | T11 |
 
 **绝对不得触碰：** `CROSS-REVIEW.md`（见 §5 的 Gate 定义）。
@@ -65,14 +73,14 @@
 ## 2. 任务依赖
 
 ```text
-T0 (zip.js 能力硬 Gate) ─> T3
-T1 ─> T6
-T2 ─> T3 ─> T4 ─┐
-          T5 ───┼─> T7 ─> T8 ─> T9 ─> T10 ─┬─> T11
-          T6 ───┘                          └─> T12
+Phase 0（独占）: T0
+
+Phase 1（T0 全绿后）:
+  Lane A: T1 -> T6 ----------------------------┐
+  Lane B: T2 -> T3 -> T3a -> T4 -> T5 --------┴-> T7 -> T8 -> T9 -> T10 -> T11 -> T12
 ```
 
-T0、T1、T2 可并行；其余严格串行。**T0 任一项失败即停止并上报——不得自动改走路线 A，不得放宽任何安全边界。**
+**T0 不得与 T1/T2 并行。** 任一 Gate 失败即停止并上报——不得让 T1/T2 先留下半套实现，不得自动改走路线 A，不得放宽任何安全边界。T12 必须在 T11 之后：must-not-fail 第 3 条的真实 undo 往返明确落在 T11，依赖图不得把它们画成并行分支。
 
 ---
 
@@ -114,13 +122,51 @@ export type Sha256Hex = (input: Uint8Array) => Promise<string>;
 
 读写分库是刻意的：换掉写侧会让已合入并过审的导出器重新变成待验证状态，而我们要的只是"读的时候能发现被篡改"。**此前写在本节的"路线 B 必须替换 exporter"以及 §0 的"exchange 不得新增运行时依赖"两条说法，随本冻结一并作废。**
 
-**必须加一条负样本**（矩阵第 11 条）：篡改 `events.jsonl` 或 `manifest.json` 的压缩数据、**不更新 CRC**，且构造成解压后仍是合法 UTF-8 / JSON / 通过 schema 的形态——必须因 `CRC_MISMATCH` 被拒。它是唯一能证明"CRC 校验真的在跑"的测试，其余校验对它全部无感。
+依赖与运行配置同样冻结，不留给实现者猜默认值：
+
+```ts
+// package.json: exact version, no caret
+"@zip.js/zip.js": "2.8.34"
+
+export const ZIP_WORKER_OPTIONS = {
+  useWebWorkers: true,
+  useCompressionStream: true,
+  transferStreams: true,
+} as const;
+
+export const ZIP_READER_OPTIONS = {
+  ...ZIP_WORKER_OPTIONS,
+  strictness: "strict",
+  checkOverlappingEntry: true,
+} as const;
+
+export const ZIP_ENTRY_OPTIONS = {
+  ...ZIP_WORKER_OPTIONS,
+  strictness: "strict",
+  checkOverlappingEntry: true,
+  checkSignature: true,
+} as const;
+```
+
+adapter 必须把 `ZIP_READER_OPTIONS` **逐次显式传给 `new ZipReader(...)`**，把 `ZIP_ENTRY_OPTIONS` 与该次新建的 `signal` **逐次显式传给每个 `entry.getData(...)`**；不得只导出常量却依赖 vendor 默认值。也不得把这三项 worker 选项只交给全局 `configure()`：zip.js 2.8.34 的 `Configuration` 类型虽然继承 `transferStreams`，但其运行时全局 configurable-property 列表不处理该键；走全局配置会让 `transferStreams: true` 成为静默无效的摆设（以精确版本包内 `index.d.ts` 与 `lib/core/configuration.js` 为核对证据）。T0 用可观测 factory/entry double 精确断言两处实际收到的 option object，删掉任一字段都必须变红。
+
+只从 `@zip.js/zip.js` 根入口 import；不得另行配置或引入独立 `workerURI` / `wasmURI`。T3a 必须证明实际 Vite browser build 能运行且处理 fixture 时没有外部 worker/WASM 请求：**页面加载完成后、第一次调用 ZIP adapter 之前切为离线，再执行完整探针**；同时由早于 module script 安装的 Worker constructor spy 与浏览器 Network log 证明没有 `http(s):` worker URL 或外部 WASM/worker 请求。只看主页面的 `performance` entries 不够，它可能看不到 worker 内部发起的请求。若 inline worker/WASM、CSP 或 Safari 路径失败，**停下上报**，不得在本计划内静默切到 `?url` asset 路线。生产 `readPackage` 与 QA 探针必须调用同一个 `zipRuntime` adapter。
+
+**必须加一条负样本**（矩阵第 11 条）：篡改 `events.jsonl` 或 `manifest.json` 的压缩数据、**不更新 CRC**，且构造成解压后仍是合法 UTF-8 / JSON / 通过 schema 的形态。T0-G4 先证明 zip.js 原始错误为 `ERR_INVALID_SIGNATURE`；adapter 只在启用 `checkSignature: true` 的 entry `getData` 阶段把该错误映射为项目错误 `CRC_MISMATCH` 并保留 `cause`。矩阵断言项目错误；不得把其它解析错误误映射为 CRC。
 
 ### 3.4 ZIP 防护：严格读取器 + 按**实际产出**计量
 
-体积上限**必须按实际解压产出计量**，不能只信中央目录声明的 `originalSize`——那是**攻击者可控的值**，伪造成"很小"的条目完全可以展开出几百 MB。
+体积上限**必须按实际解压产出计量**，不能只信中央目录声明的 `uncompressedSize`（旧 fflate 草案中的字段名是 `originalSize`）——那是**攻击者可控的值**，伪造成“很小”的条目完全可以展开出几百 MB。
 
 用 `@zip.js/zip.js` 的流式读取，把每个 entry 的输出接进一个**计数 `WritableStream`**：每收到一个 chunk 就累加单 entry 与总量，**任一越界立即通过 `AbortSignal` 终止**并抛错。计数发生在 chunk 层，因此终止点与实际写出的字节严格对应，不依赖任何声明值。
+
+限额必须分三层，测试也必须分别证明失败发生在正确阶段：
+
+1. **`PACKAGE_COMPRESSED_LIMIT`**：`bytes.byteLength` 超限时，在构造 `ZipReader` 前拒绝；reader factory 调用次数必须为 0；
+2. **`PACKAGE_DECLARED_LIMIT`**：通过 `getEntriesGenerator()` 单遍枚举 metadata，在逐条 yield 时累计 entry 数、单 entry `uncompressedSize` 与声明总量；超限时所有 entry 的 `getData` 调用次数必须为 0。这只是便宜早拒，不能替代安全计量；
+3. **`PACKAGE_OUTPUT_LIMIT`**：真实 vendor fixture 至少分两条，且每个 entry 的 local/central `uncompressedSize` 两处始终一致、CRC 始终按实际 payload 正确填写：① 单 entry 的声明值恰好等于其类型 cap，实际 deflate 输出为 `cap + 1`；② 多 entry 各自声明值都不超过单条 cap、声明总和恰好等于 package total cap，但最后一条的实际输出多 1 byte，使**累计实际输出**越过 total cap。counting writer 在 crossing chunk 到达时先置 sticky `limitExceeded`、abort 且不保留该 chunk，断言 `signal.aborted === true`、reader 在 `finally` 关闭、未消费后续 chunk。zip.js 2.8.34 自己也会拿声明的 `uncompressedSize` 校验实际输出并可能抛 `ERR_INVALID_UNCOMPRESSED_SIZE`（核对精确版本包内 `lib/core/zip-reader.js` 与 `lib/core/streams/codec-stream.js`）；因此 adapter 的 catch/finally 在 `limitExceeded === true` 时必须优先重抛稳定的 `PACKAGE_OUTPUT_LIMIT`，不得被 vendor size error、`AbortError` 或 close error 覆盖。若 flag 未置位，则不得把 vendor 错误误映射成项目限额错误。
+
+T0/T3 可以通过 package-internal helper 注入较小的测试 cap，生产公开 `readPackage` 必须硬接 `PACKAGE_LIMITS`；但这条 Gate 必须走真实 zip.js `entry.getData` 与真实压缩 fixture。只用 fake writer/double 证明计数逻辑不构成 vendor 集成证据。
 
 严格读取器的配置与拒绝清单见 §T0，它们是硬 Gate 的验收项。
 
@@ -234,7 +280,14 @@ exchange 的 `LedgerRestorePlan` 与 `RestoreLedgerInput` **结构兼容**但独
 
 ### 3.10 UI 激活状态机（本轮不实现，但必须可执行）
 
-UI 切片按此实现，不得自行发挥。
+UI 切片按此实现，不得自行发挥。**Bootstrap 的锁内状态判定必须早于身份与 runtime 创建。** 锁外读取 `pendingRestoreDeviceId` 只能作为“是否可能需要恢复”的 hint，绝不能授权身份、判定状态或缓存 `deviceId`：另一标签页可能在本标签页等待锁期间完成恢复并切换身份。
+
+在支持恢复的环境里，启动顺序只有两条合法分支：
+
+- **shared 锁内重读为无 pending**：取得 shared lock → **在该锁内重读 pending** → 此时才可读取或生成正式 `deviceId` → 打开 repository → 创建可写 runtime，并让该 runtime 在整个生命周期持有这把 shared lock；
+- **shared 锁内重读为有 pending**：不得调用 `loadDeviceId()` 或 `crypto.randomUUID()`，不得创建可写 runtime；释放 shared，转入禁写恢复分支并取得 exclusive lock；**在 exclusive callback 内再次同时读取 pending、marker 与三 store 状态**，只按这次读到的值执行 §3.10.5。若 pending 在换锁期间已被另一标签页删除或改变，不得沿用旧 hint：释放 exclusive 并从 bootstrap 起点重试。
+
+未来 UI 切片的冻结写集（**本轮不实施**）：`apps/web/src/main.tsx`、`apps/web/src/app/repositoryLifecycle.ts` + `.test.ts`、新建 `apps/web/src/app/runtimeWriteLock.ts` + `.test.ts`、新建 `apps/web/src/app/restoreActivation.ts` + `.test.ts`、`apps/web/package.json`、`pnpm-lock.yaml`。届时 `restoreActivation` 会在生产代码 import `@tenjin/exchange`，所以必须把它从 devDependency 移到 dependencies，并让 `predev` 同时 build exchange 与 storage；clean checkout 的 `pnpm --filter @tenjin/web dev` 与 `build` 都必须作为 Gate，禁止依赖残留 `dist/`。
 
 #### 3.10.1 前一版的缺陷：从「任一 store 非空」推断「已提交」
 
@@ -247,37 +300,53 @@ UI 切片按此实现，不得自行发挥。
 #### 3.10.2 锁协议
 
 - **所有可写 runtime 在其整个生命周期内持有一个 shared lock**（命名锁，如 Web Locks API 的 `shared` 模式）。不是"恢复时才加锁"——平时不持有，恢复方就无从知道还有谁在写。
-- **恢复方的顺序**：① 通知其它 runtime 转入只读并**关闭连接**（释放各自的 shared lock）；② 然后申请**exclusive lock**；③ 拿不到 → **拒绝进入恢复流程**（fail-closed）；④ 运行环境不提供该能力 → 同样拒绝，不得"假装安全地继续"。
+- **Web Lock 不支持原地升级。** 发起恢复的 runtime 自己也是 shared holder；若不先释放自己的 shared lock就申请 exclusive，会在单标签页下自锁。
+- **恢复方的顺序**：① 本 runtime 保持禁写，关闭 repository 并显式释放自己的 shared lock；② 通知其它 runtime 转入只读、关闭连接并释放各自 shared lock；③ 用可取消的有界等待申请 exclusive lock；④ 拿不到 → **拒绝进入恢复流程**（fail-closed），且不得写 pending；⑤ 运行环境不提供该能力 → 同样拒绝，不得"假装安全地继续"。
 - **三 store 全空的检查必须在拿到 exclusive lock 之后、在该锁内进行**。锁外检查是 check-then-act。
+- exclusive callback 内重新打开**仅供恢复**的 repository；验空、pending 之后的 restore 与 marker 验证必须全部发生在该 callback 生命周期内。成功后直接 close + reload，**不得恢复旧 runtime**。
+- 选包取消、exclusive 获取失败、或非空拒绝等**尚未写 pending**的出口，只有在确认 localStorage/DB 未变、重新取得 shared lock并重建 repository/runtime 后才能恢复写入。pending 一旦写下，失败后保持禁写并交给 bootstrap 状态机处理。
 
 #### 3.10.3 顺序被改了：先验空，再写 pending
 
 ```text
 1. 禁写          停止本 runtime 的一切写入路径（采集、复习、撤销）
-2. 让位          通知其它 runtime 转只读并关闭连接
-3. exclusive     申请 exclusive lock；拿不到即拒绝，全程 fail-closed
-4. 验空          在锁内检查 events / contexts / clock 三 store 全为 count === 0
-   4a. 非空      →【拒绝】在此终止。**不写 pending**；localStorage 与原 deviceId 一字不动；
+2. 自身让位      关闭本 repository，释放本 runtime 自己持有的 shared lock
+3. 其它端让位    通知其它 runtime 转只读、关闭连接并释放 shared lock
+4. exclusive     有界申请 exclusive lock；拿不到即拒绝且不写 pending
+5. 验空          在 exclusive callback 内打开 restore-only repository，检查三 store 全为 count === 0
+   5a. 非空      →【拒绝】在此终止。**不写 pending**；localStorage 与原 deviceId 一字不动；
                    用户看到的是"当前账本非空，无法恢复"，而不是任何中间态
-   4b. 全空      → 继续
-5. 写并读回      生成 newDeviceId → 写 localStorage 的 pendingRestoreDeviceId → 立即读回校验一致
-6. restore       调用 restoreLedger(input, pendingRestoreDeviceId)
-7. 提升          成功后把 pendingRestoreDeviceId 提升为 tenjin.deviceId
-8. 删 pending / close repository / reload
+   5b. 全空      → 继续
+6. 写并读回      生成 newDeviceId → 写 localStorage 的 pendingRestoreDeviceId → 立即读回校验一致
+7. restore       调用 restoreLedger(input, pendingRestoreDeviceId)，数据与 marker 同事务提交
+8. 绑定验证      close/reopen 后读取 marker，完整校验并确认 marker.newDeviceId === pendingRestoreDeviceId
+9. 提升          把同一个 pendingRestoreDeviceId 提升为 tenjin.deviceId
+10. 删 pending / close repository / reload
 ```
 
-**第 4 步必须在第 5 步之前**，这是与前一版最重要的差别。这样 pending 只会为"当时确实为空的库"写下，`RESTORE_ABORTED_DIRTY` 这种状态在磁盘上不可能出现。
+**第 5 步必须在第 6 步之前**，这是与前一版最重要的差别。这样 pending 只会为"当时确实为空的库"写下，`RESTORE_ABORTED_DIRTY` 这种状态在磁盘上不可能出现。
 
 #### 3.10.4 `COMMITTED` 必须是事实，不是推断：durable commit marker
 
 即便有了上面的顺序，「pending + 非空 = 已提交」仍然依赖一个前提：**在 pending 写下之后、除了我们的 restore 之外没有任何东西写过这个库**。要让这个前提成立，就得证明**每一条写路径**都参与了同一把锁——而那是一个需要穷举、且必须永远保持为真的审计义务，在一个还会继续长的代码库里没人能真正担保。
 
-因此本计划要求：**恢复必须写一个 durable commit marker，与恢复数据在同一个 readwrite 事务内提交。** `COMMITTED` 的判据是**这个 marker 存在**，而不是"某个 store 非空"。
+因此本计划要求：**恢复必须写一个 durable commit marker，与恢复数据在同一个 readwrite 事务内提交。** `COMMITTED` 的判据是**一个结构合法且绑定当前 pending id 的 marker 存在**，而不是"某个 store 非空"或"某个 marker 恰好存在"。
+
+```ts
+export interface RestoreCommitRecord {
+  readonly key: "restore-commit";
+  readonly type: "restore-commit";
+  readonly newDeviceId: string;
+  readonly committedAt: string;
+}
+```
+
+这是封闭键集：额外字段一律拒绝；`newDeviceId` 走 §3.8 的 canonical 校验；`committedAt` 必须是毫秒精度 canonical UTC ISO-8601，满足 `new Date(Date.parse(value)).toISOString() === value`。UI 只有在 `record.newDeviceId === pendingRestoreDeviceId` 时才能判为 committed。malformed 或 id mismatch 一律进入 `RESTORE_STATE_CORRUPT`：保持禁写，禁止再次 restore、提升、铸新 id、恢复写入或修改 localStorage。
 
 两处连带后果，已一并纳入本计划，不得遗漏：
 
-- **T8**：`restoreLedger` 在同一事务内写入 marker（本轮 DB 保持 v2，marker 落在既有 `clock` store，键名 `restore-commit`）；
-- **T10 L3**：clock 的精确键集合相应变为 `{"global-hlc", "restore-commit"} ∪ {"device-sequence:<id>" | id ∈ maxSeqByDevice}`。
+- **T8**：`restoreLedger` 在同一事务内写入精确 `RestoreCommitRecord`（本轮 DB 保持 v2，marker 落在既有 `clock` store），并提供只读 accessor；
+- **T10 L3**：clock 的精确键集合相应变为 `{"global-hlc", "restore-commit"} ∪ {"device-sequence:<id>" | id ∈ maxSeqByDevice}`，同时验证 marker 的完整值与 expected new device id，而不只检查键存在。
 
 > **与 owner 指令的差异（须知悉）**：owner 把 marker 写成了条件项（"若无法保证所有写路径参与同一锁，则必须改用"）。本计划**无条件采用** marker，因为条件的成立需要一份永远有效的穷举证明，而 marker 只需一条记录就把推断变成事实。若你坚持条件化，需回改 T8 与 T10 两处。
 
@@ -286,42 +355,78 @@ UI 切片按此实现，不得自行发挥。
 | pending | commit marker | 状态 | 动作 |
 |---|---|---|---|
 | 无 | 任意 | `NORMAL` | 正常启动 |
-| 有 | **无** | `RESTORE_PENDING_EMPTY` | **保持禁写**。两条出路：用**同一个** pending id 重新选包继续；或**显式取消**（删 pending → `NORMAL`）。不得静默丢弃 pending，不得自动铸新 id，**不得提升该 id** |
-| 有 | **有** | `RESTORE_PENDING_COMMITTED` | **绝不再次 restore**。跑健全性检查 → 提升同一个 pending id → 删 pending → close → reload |
+| 有 | **无，且三 store 全空** | `RESTORE_PENDING_EMPTY` | **保持禁写**。两条出路：用**同一个** pending id 重新选包继续；或**显式取消**（删 pending → `NORMAL`）。不得静默丢弃 pending，不得自动铸新 id，**不得提升该 id** |
+| 有 | **无，但任一 store 非空** | `RESTORE_STATE_CORRUPT` | 原子恢复不可能合法产生“数据存在但 marker 缺失”；保持禁写，不允许把它当作可重试空库 |
+| 有 | **合法且 `marker.newDeviceId === pending`** | `RESTORE_PENDING_COMMITTED` | **绝不再次 restore**。跑健全性检查 → 提升同一个 pending id → 删 pending → close → reload |
+| 有 | **malformed 或 id mismatch** | `RESTORE_STATE_CORRUPT` | 保持禁写并显示可诊断错误；禁止 restore、提升、铸新 id、恢复写入或改 localStorage |
 
 **失败清理规则：**
 
-- 第 4a 步被拒（非空）→ 因为**根本没写 pending**，下次启动就是 `NORMAL`，无需清理；
-- `restore` 抛错（零写入，marker 也未写）→ pending 保留、marker 不存在 → `RESTORE_PENDING_EMPTY`，可用同一 id 重试或显式取消；
-- `restore` 成功但提升前崩溃 → marker 已随数据原子提交 → `RESTORE_PENDING_COMMITTED`，用同一 id 完成提升；
+- 第 5a 步被拒（非空）→ 因为**根本没写 pending**，下次启动就是 `NORMAL`；释放 exclusive 后重新取得 shared lock并重建 runtime 才能恢复写入；
+- `restore` 抛错（零写入，marker 也未写）→ pending 保留、marker 不存在且三 store 仍空 → `RESTORE_PENDING_EMPTY`，可用同一 id 重试或显式取消；
+- `restore` 成功但提升前崩溃 → 合法 marker 已随数据原子提交且 id 与 pending 相同 → `RESTORE_PENDING_COMMITTED`，用同一 id 完成提升；
 - **任何情况下都不得在未提升时铸新 id。**
 
-#### 3.10.6 三个 UI Gate（UI 切片必须通过）
+#### 3.10.6 UI Gate（UI 切片必须通过）
 
-- **U1「DB 已提交但提升前崩溃」**：在第 6 步之后、第 7 步之前强杀应用；重启后必须进入 `RESTORE_PENDING_COMMITTED`，用同一 id 完成提升，且**不得再次调用 restore**。
-- **U2「另一标签页持有旧 runtime」**：开两个标签页，其一进入恢复流程；必须要么被 fail-closed 拒绝，要么另一标签页被强制转只读并关闭连接。**绝不允许**"一个标签页恢复完成、另一个拿旧 `deviceId` 继续写"。
-- **U3「既有非空库的恢复被拒」**：拿一个**正常使用中的非空账本**走恢复流程。必须在第 4a 步被拒；**localStorage 一字未改**（无 pending、`tenjin.deviceId` 原样）；随后**重启**——必须落在 `NORMAL`，**不得**进入 `RESTORE_PENDING_COMMITTED`，**不得**提升任何新 id，账本逐条不变。这条直接打 §3.10.1 那个反例。
+- **U1a「DB 已提交但提升前崩溃」**：在第 7 步之后、第 9 步之前强杀应用；重启时先处理 pending/marker，且在此之前 `loadDeviceId`、`crypto.randomUUID`、runtime factory 与所有写方法调用次数均为 0。合法且 id 相同 → `RESTORE_PENDING_COMMITTED`，完成提升且**不得再次调用 restore**。
+- **U1b/U1c「marker 不授权错误身份」**：分别构造 marker id 与 pending 不同、marker malformed；两者都进入 `RESTORE_STATE_CORRUPT` 并满足全部禁写条件。
+- **U1d「数据存在但 marker 缺失」**：pending 存在、任一 store 非空、marker 缺失时必须进入 `RESTORE_STATE_CORRUPT`，不得误判为可重试空库。
+- **U1e「等待 shared 期间另一标签页完成恢复」**：本标签页先看到锁外“无 pending”hint 后阻塞；另一标签页完成 restore、提升身份并删除 pending；本标签页取得 shared 后必须重读 pending，随后调用 `loadDeviceId()` 只能得到已提升的新 id。断言旧 id 从未被读取、缓存或用于创建 runtime。
+- **U1f「pending hint 在换锁期间失效」**：本标签页在 shared 锁内读到 pending，释放 shared 准备 exclusive；另一标签页先完成并删除 pending。本标签页取得 exclusive 后重读为无 pending时，必须不处理旧 pending/marker、不调用 restore/提升/铸 id，释放 exclusive 后从 bootstrap 起点重试。
+- **U2a「单标签页升级」**：本标签页已持有 shared，进入恢复后必须先释放自己的 shared，随后 exclusive 能成功取得；禁止依赖宿主超时碰巧结束。
+- **U2b「另一标签页拒绝让位」**：exclusive 有界失败；无 pending、无 DB/localStorage 改动。若要继续正常使用，必须重新取得 shared lock并重建 runtime。
+- **U2c「另一标签页已让位」**：其旧 runtime 的全部写调用继续被拒绝；绝不允许一个标签页恢复完成、另一个拿旧 `deviceId` 继续写。
+- **U3a/U3b/U3c「单 store 非空」**：分别构造仅 `events`、仅 `contexts`、仅 `clock` 非空（clock-only 优先用真实 `reserveEventCoordinates` 制造）。每个变体都必须在写 pending 前拒绝，并断言 `localStorage.setItem(pendingKey, ...)` 调用次数为 0、正式 deviceId 与 marker 不变、三 store 逐条/逐字节不变、未调用 restore、未提升或铸造 id、重启进入 `NORMAL`。完整正常非空账本可保留为 U3d 控制组，但不能替代三种单-store 用例。
+
+T8 的测试 6–8 保护 storage 的最终事务入口；U3a–c 独立保护 UI 的 pre-pending 检查，两者不能互相替代。
 
 ---
 
 ## 4. 任务
 
-### T0: `@zip.js/zip.js` 能力硬 Gate（阻塞 T3）
+### T0: `@zip.js/zip.js` 能力硬 Gate（阻塞全部实现任务）
 
-**Files:** `packages/exchange/package.json`、`pnpm-lock.yaml`、新建 `packages/exchange/src/zipReaderProbe.test.ts`
+**Files:** `packages/exchange/package.json`、`pnpm-lock.yaml`、`packages/exchange/src/index.ts`、新建 `packages/exchange/src/zipRuntime.ts` + `.test.ts`、`packages/exchange/src/zipProbeFixtures.ts`、`packages/exchange/tsconfig.public-api.json`、`packages/exchange/type-tests/public-api.ts`
 
-这是一道 **Gate 而不是实现任务**：先用探针实测证明这个库能同时满足下列全部要求，再谈写 `readPackage.ts`。**任一项失败即停止并上报——不得自动改走路线 A，不得放宽任何一条安全边界来"让它过"。**
+T0 是**独占 Phase 0**。只允许写可复用的最小 vendor adapter、共享 byte fixtures 与类型消费 Gate；不得提前实现 `readPackage` 的 manifest/schema/context 逻辑。结论只有 `PASS` / `FAIL`：任一项失败即停止，只保留日志与证据，不启动 T1/T2/T3，不自动改走路线 A，也不放宽边界。
 
-- [ ] **G1 严格模式** — 读取器必须配置 `strictness: "strict"`、`checkSignature: true`、`checkOverlappingEntry: true`，并断言这三项确实生效（各配一条负样本：签名损坏、条目重叠）。
-- [ ] **G2 明确拒绝清单** — 加密条目、multi-disk、ZIP64、以及本包不支持的 compression method（只允许 store 与 deflate），**逐项各一条负样本证明被拒**，且错误可区分。这些不是"大概不会遇到"，而是攻击面：一个声明加密或跨盘的包若被静默当普通包读，后面的全部校验都建立在错误的解析上。
-- [ ] **G3 按实际产出限额** — 用**计数 `WritableStream`**接每个 entry 的输出，按 chunk 累加单 entry 与总解压字节，越界立即经 `AbortSignal` 终止。负样本：伪造较小 `originalSize`、实际展开更大——必须在**实际产出**触限时终止，且错误消息指向输出限额而**不是**任何更早的格式检查。
-- [ ] **G4 CRC** — 篡改压缩数据但不更新 CRC，且构造成解压后仍是合法 UTF-8 / JSON / 通过 schema——必须报 **`CRC_MISMATCH`**。这是整个 T0 里最关键的一条：它是唯一能证明"CRC 真的在校验"的测试。
-- [ ] **G5 双运行路径** — 同一份代码在 **Node**（Vitest）与**目标 Safari / iPhone** 路径下都能跑通 G1–G4。zip.js 基于 Web Streams，两边的可用性与 worker 行为并不当然一致；只在 Node 验过就上线，等于把失败推迟到真机。
-- [ ] **G6 类型边界** — **`pnpm --filter @tenjin/exchange typecheck` 必须仍然退出 0**，且 `packages/exchange/tsconfig.json` 的 `lib` 仍为 `["ES2023"]`、既无 DOM 也无 `@types/node`。
+`index.ts` 在 T0 只导出 T3/T3a 会复用的窄 API：冻结的 worker/reader/entry options、`runZipRuntimeProbe` 与只读 `ZIP_PROBE_FIXTURES`；不得 export 任何 zip.js 原生类型。T3 完成后 `readPackage` 复用 adapter，T3a 从包根调用同一 probe API。
 
-> **G6 是本 Gate 里最可能失败的一项，务必先做。** zip.js 的公开 API 建立在 Web Streams（`ReadableStream` / `WritableStream` / `TransformStream`）之上，而这些类型在 TypeScript 里来自 DOM lib。若无法用 §3.5 那种极窄的本地 `declare` 把它们收敛在包内，就说明这个库无法在不破坏 exchange 类型边界的前提下使用——**那就是 T0 失败**，停下上报，由 owner 重新决定路线，而不是顺手给 exchange 加 DOM lib。
+先从仓根精确安装依赖并审 lock diff，再写 probe：
 
-**Gate 产出**：把 G1–G6 各自的实测结果（命令、真实输出、结论）写回 §3.3，再进入 T3。探针测试文件可保留为回归测试。
+```bash
+pnpm --filter @tenjin/exchange add '@zip.js/zip.js@2.8.34' --save-exact
+```
+
+`packages/exchange/package.json` 必须得到无 `^` / `~` 的精确版本；`pnpm-lock.yaml` 只允许出现 exchange importer 与该依赖的必要解析变化。若命令带来无关升级，停止并先收窄 lock diff。
+
+- [ ] **G0 配置不是死常量** — 可观测 reader factory 必须收到与 `ZIP_READER_OPTIONS` 深度全等的对象；每次 `getData` 必须收到 `ZIP_ENTRY_OPTIONS` 全部字段与该次非复用的 `AbortSignal`。删掉 `useWebWorkers` / `useCompressionStream` / `transferStreams` / `strictness` / `checkOverlappingEntry` / `checkSignature` 任一字段，对应断言必须变红；不得用“当前 vendor 默认值碰巧相同”代替。
+- [ ] **G1 三项严格性各自有牙**
+  - strictness：固定为 **filename-only mismatch**（其余 header、CRC 与数据完全合法）；`strictness: "strict"` 必须报 `ERR_AMBIGUOUS_ARCHIVE`。同一 fixture 的 `balanced` 控制组不能只断言“不报这个错误”——必须带 `checkSignature: true` 成功 `getData`，并逐字节等于 expected payload；
+  - CRC/signature：损坏压缩数据且不更新 CRC，原始错误必须是 `ERR_INVALID_SIGNATURE`；adapter 映射后才是 `CRC_MISMATCH`，并保留 `cause`；
+  - overlap：先对 entry A 调 `getData`，再对重叠 entry B 调 `getData`，必须报 `ERR_OVERLAPPING_ENTRY`。只枚举 entries 不构成 overlap 证据。
+- [ ] **G2 明确拒绝清单** — 加密、不支持的 compression method（只允许 store/deflate）分别产出 `ZIP_ENCRYPTED_UNSUPPORTED`、`ZIP_COMPRESSION_UNSUPPORTED`，且在第一次 `getData` 前拒绝。multi-disk 必须拆开两条：① EOCD / ZIP64 locator 的 archive-level disk 元数据非零；② central entry 的 `diskNumberStart !== 0`、而 archive-level 元数据仍为单盘。两者都产出 `ZIP_MULTI_DISK_UNSUPPORTED` 且所有 `getData` 调用次数为 0；不能只靠 zip.js 对 archive-level split 的自动报错覆盖 entry 路径。ZIP64 也必须拆成两个 fixture：
+  - `ZIP64_ENTRY_UNSUPPORTED`：普通 EOCD，但某 entry 使用 ZIP64 extra field，先断言 `entry.zip64 === true` 再拒绝；
+  - `ZIP64_ARCHIVE_UNSUPPORTED`：存在 ZIP64 EOCD record/locator、普通 entries 的 `entry.zip64 === false`，由原始 envelope guard 拒绝。该 guard 必须从**最后一个合法 EOCD 的固定相对位置**解析 locator，验证 locator 紧邻 EOCD、locator 指向的 offset 在界内且确实是 ZIP64 EOCD signature；禁止对整包做 magic-byte scan。不得用“所有 `entry.zip64` 均为 false”证明 archive 非 ZIP64；
+  - **raw guard 负控制**：普通 ZIP 的 payload 与 EOCD comment 分别含 `0x06064b50` / `0x07064b50` 字节序列时仍须接受，证明实现没有把任意 magic bytes 误判成 ZIP64；
+  - **非 ZIP64 上界控制组**：用现有 fflate writer 产出恰好 `65_535` 个最小唯一条目，zip.js 必须能完整枚举 `65_535` 个且 archive/entry 均未被判为 ZIP64；这个控制组不跑 manifest/schema。它守的是 `0xFFFF` 边界的读写互操作，不能只靠常量算式自证。
+- [ ] **G3 三层限额** — 逐一证明 §3.4 的 compressed / declared / actual-output 三层；每条断言 reader factory、`getData`、AbortSignal 与 close 调用次数，确保红灯来自目标阶段。actual-output 必须使用“local/central 声明值 = 测试 cap、实际输出 = cap + 1、CRC = 实际 payload”的真实 zip.js fixture，分别咬住单 entry cap 与 package total cap，并钉住 `limitExceeded` 优先级；writer double 只能作辅助单测。
+- [ ] **G4 CRC raw + mapping** — 对同一个“解压后仍是合法 UTF-8 / JSON / schema”的 fixture，同时钉住 zip.js 原始 `ERR_INVALID_SIGNATURE` 与项目 `CRC_MISMATCH`。删除任一断言都必须让对应突变漏过；其它错误不得被映射。
+- [ ] **G6 双层类型边界**
+  1. 保留 `pnpm --filter @tenjin/exchange typecheck`，确认 source 包仍为 `lib: ["ES2023"]`、无 DOM、无 `@types/node`；
+  2. 先 build，再用 `tsconfig.public-api.json` 编译 `type-tests/public-api.ts`：`lib: ["ES2023"]`、`types: []`、`skipLibCheck: false`、`noEmit: true`。T0 的 consumer 必须实际调用公开的 ZIP runtime/probe API；T7 增加正式 restore API 后，同一 Gate 必须扩展为同时调用 restore API，并在 T11 再跑。每一阶段生成的 `dist/*.d.ts` 都不得泄漏 `WritableStream`、`AbortSignal`、zip.js 或 Node 类型。只跑继承了 `skipLibCheck: true` 的现有 typecheck 不构成 G6 证据。
+
+```bash
+pnpm --filter @tenjin/exchange test
+pnpm --filter @tenjin/exchange typecheck
+pnpm --filter @tenjin/exchange build
+pnpm --filter @tenjin/exchange exec tsc -p tsconfig.public-api.json
+```
+
+> **G5 不再伪装成 T0 内不可执行的真机 Gate。** 浏览器 bundle/runtime 是 T3a-G5a，真实 iPhone PWA 离线往返是切片最终 G5b；二者都必须通过才能声称 A1 完成，但具体 iPhone 不阻塞本后端计划达到 `BACKEND_READY / LIMITS_PROVISIONAL`。
+
+**Gate 产出：** 测试与原始输出随 T0 checkpoint 一起审阅；不得在执行期改写本计划来“记录成功”。探针与 fixtures 保留为回归测试。
 
 ---
 
@@ -453,15 +558,15 @@ export const PACKAGE_LIMITS = {
 } as const;
 ```
 
-**导出器必须共享同一份限额并在导出前预检**：`exportLedgerPackage` 压缩前校验条目数 / context 数 / 每条目声明大小 / 解压总量，压缩后再校验压缩体积。必须有一条测试证明"超限的账本导出即抛错，而不是产出一个自家恢复器拒收的包"。
+**导出器必须共享同一份限额并在导出前预检**：`exportLedgerPackage` 压缩前校验条目数 / context 数 / 每条目声明大小 / 解压总量，压缩后再校验压缩体积。测试必须同时证明：`entries = 65_535` / `contexts = 32_766` 的结构边界被接受；任一加 1 都在调用 fflate 前拒绝；超限账本不会产出一个自家恢复器拒收的包。T0-G2 的真实 fflate→zip.js 上界控制组另行证明 `0xFFFF` 读写互操作，不能由纯函数边界测试替代。
 
 ---
 
 ### T3: 严格读包（zip.js）、UTF-8 严格解码、条目白名单
 
-> **T0 未全绿之前不得开工。** 读取器为 `@zip.js/zip.js`，配置与拒绝清单沿用 T0 的 G1/G2 并在本任务落成生产代码；限额按 T0 的 G3 用计数 `WritableStream` + `AbortSignal` 实现；CRC 由读取器负责（G4）。
+> **T0 未全绿之前不得开工。** 读取器复用 T0 已验证的 `zipRuntime` adapter 与冻结配置；不得在 `readPackage.ts` 里直接再包一层 zip.js。拒绝清单沿用 G1/G2，限额沿用 G3，CRC raw/mapping 沿用 G4。
 
-条目名白名单与重复条目检测仍是本任务的职责：读取器给出条目清单后，先按 §3.4 的白名单正则筛，再检测重名。**重名必须在拿到条目清单时就检出**——若把条目收进一个以名字为键的 map，重复项会静默塌成最后一个，那个"两条同名条目"的事实从此消失。
+条目名白名单与重复条目检测仍是本任务的职责，但 **zip.js 2.8.34 在 `strictness: "strict"` 下调用 `getEntries()` 会在返回数组之前自行对重复 filename 抛 `ERR_AMBIGUOUS_ARCHIVE`**，因此不能先调用 `getEntries()` 再假装执行项目自己的 duplicate Gate。adapter 必须改用 `getEntriesGenerator()` 单遍枚举：每次 yield 先按白名单校验，再查 `seenNames`，只在通过后收集 metadata；第二个同名条目一出现就由项目报稳定的 duplicate-entry 错误，绝不能先塞进 name-keyed map。所有正常路径必须把 generator **完整 exhaust**，不能在“已经拿够 manifest/events”时提前结束，否则 vendor strict 模式的尾部检查可能永远不执行；所有拒绝路径仍在 `finally` 关闭 reader。
 
 必须包含的测试（每条注释写清守什么）：
 
@@ -472,9 +577,15 @@ it("rejects a path traversal entry name", () => {
 });
 
 it("rejects a duplicate entry name", () => {
-  // Duplicates must be caught from the entry list, before anything keys them
-  // by name - a name-keyed map silently collapses them to the last one and the
-  // fact that there were two is gone.
+  // Feed through getEntriesGenerator(). The project duplicate error must be
+  // raised on the second yield, before anything keys it by name; getEntries()
+  // is not an allowed implementation because strict mode throws first.
+});
+
+it("exhausts the entry generator before accepting an archive", () => {
+  // Use an instrumented async generator whose code after the final yield marks
+  // natural completion. `return()`/early break must not satisfy this assertion.
+  // This keeps zip.js strict post-enumeration checks reachable.
 });
 
 it("rejects invalid UTF-8 in a text entry", () => {
@@ -484,17 +595,77 @@ it("rejects invalid UTF-8 in a text entry", () => {
 
 it("accepts a missing or empty redactions.jsonl but rejects a non-empty one", () => {});
 
-it("rejects an entry that lies about originalSize and expands past the cap", () => {
-  // The forged-size bomb: the central directory claims a small size, the
-  // stream produces far more. Only the second pass, counting ACTUAL output,
-  // can catch this. Assert on the output-limit error message so a red light
-  // from some earlier format check cannot be mistaken for this guard firing.
-  // NOTE: this stays a T3 unit test; the numbered matrix slot 11 belongs to
-  // CRC (see T12).
+it("rejects compressed input before constructing a reader", () => {
+  // PACKAGE_COMPRESSED_LIMIT: readerFactory must stay at 0 calls.
+});
+
+it("rejects declared expansion before extracting an entry", () => {
+  // PACKAGE_DECLARED_LIMIT: every entry.getData must stay at 0 calls.
+});
+
+it("prioritises PACKAGE_OUTPUT_LIMIT when actual output crosses the declared cap", () => {
+  // PACKAGE_OUTPUT_LIMIT: reject the chunk that crosses the line, abort the
+  // signal, close in finally, consume no later chunk, and preserve the stable
+  // project error rather than letting ERR_INVALID_UNCOMPRESSED_SIZE,
+  // AbortError, or a close error replace it. The real ZIP declares exactly the
+  // injected cap in both headers, expands to cap + 1, and has a correct CRC.
+  // This remains a T3 unit test; numbered matrix slot 11 belongs to CRC.
+});
+
+it("enforces the package total against cumulative actual output", () => {
+  // Every individual entry stays below its own cap. The final entry crosses
+  // only the aggregate cap; PACKAGE_OUTPUT_LIMIT must still win over the
+  // vendor size error and no later entry may be consumed.
 });
 ```
 
-限额按 §3.4 用计数 `WritableStream` 实现，按 chunk 累计**实际产出**字节，越界经 `AbortSignal` 终止。
+限额按 §3.4 三层实现；只有第三层使用计数 `WritableStream` 按 chunk 累计**实际产出**字节并经 `AbortSignal` 终止。`limitExceeded` 是 sticky 项目状态：一旦置位，catch/finally 必须保留 `PACKAGE_OUTPUT_LIMIT`；未置位时 `ERR_INVALID_UNCOMPRESSED_SIZE` 原样分类，不能一概吞掉。另有独立 CRC 映射测试：只有 `entry.getData(..., { checkSignature: true })` 抛出的 `ERR_INVALID_SIGNATURE` 映射为 `CRC_MISMATCH`；解析期的其它异常原样分类。
+
+---
+
+### T3a: G5a 浏览器 bundle/runtime Gate（阻塞 T4）
+
+**Files:** `apps/web/package.json`、`pnpm-lock.yaml`、新建 `apps/web/zip-reader-probe.html`、`apps/web/src/zip-reader-probe-main.ts`、`apps/web/vite.zip-reader-probe.config.ts`、`docs/qa/a1-zip-reader-browser-probe.md`
+
+这是**独立 QA build**，不加入 `apps/web/vite.config.ts` 的生产 PWA input，也不制造产品入口：
+
+```json
+{
+  "devDependencies": {
+    "@tenjin/exchange": "workspace:*"
+  },
+  "scripts": {
+    "pretest": "pnpm --workspace-concurrency=1 --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build",
+    "pretypecheck": "pnpm --workspace-concurrency=1 --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build",
+    "prebuild": "pnpm --workspace-concurrency=1 --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build",
+    "prebuild:zip-reader-probe": "pnpm --filter @tenjin/exchange build",
+    "build:zip-reader-probe": "vite build --config vite.zip-reader-probe.config.ts"
+  }
+}
+```
+
+编辑后从仓根运行一次 `pnpm install`，审计 `pnpm-lock.yaml` 只新增 apps/web importer 对该 workspace devDependency 的必要变化；T11 不再重复安装。`prebuild:zip-reader-probe` 是干净 checkout 可执行性的硬要求：`@tenjin/exchange` 的 workspace exports 指向 `dist/`，不能依赖开发机恰好残留旧构建。probe 必须从 `@tenjin/exchange` 调生产 `readPackage` / `zipRuntime` adapter，并复用 `zipProbeFixtures.ts` 的同一组 byte fixtures；不得在 web 侧复制 zip.js 配置、fixture 构造或错误映射。
+
+probe **不得自动执行**。`zip-reader-probe.html` 必须在 module script 之前安装一个极窄 Worker constructor spy，记录每次构造的 URL；随后页面只进入 `READY` 并提供一次性“运行离线探针”按钮。这样操作者能在任何 ZIP 调用发生前切断网络。点击后才运行 T0-G0–G4，显示并允许复制一份机器可读结果：commit SHA、browser UA、冻结配置、各 fixture 的预期/实际错误、Worker URL 列表、resource entries、离线状态与总 PASS/FAIL。spy 只记录，不改写 Worker 行为；若浏览器不允许安全包裹原 constructor，T3a 失败并停止，不能删掉观测点继续。
+
+执行步骤与 Gate：
+
+```bash
+pnpm --filter @tenjin/web test
+pnpm --filter @tenjin/web typecheck
+pnpm --filter @tenjin/web build
+pnpm --filter @tenjin/web build:zip-reader-probe
+pnpm --filter @tenjin/web exec vite preview --config vite.zip-reader-probe.config.ts
+```
+
+1. build 必须退出 0，产物中不得出现独立 worker/WASM 文件；
+2. 使用全新浏览器 profile / context，打开 DevTools Network、启用 Preserve log 与 Disable cache；页面达到 `READY` 前 probe 调用次数必须为 0；
+3. 页面加载完成后切到 Offline，**第一次**点击运行；G0–G4 必须仍全 PASS，且 `navigator.onLine === false` 被写入结果。jsdom 或“先在线跑一次再离线复跑”都不能替代此步，后者可能命中缓存；
+4. Worker spy 记录到的 URL 只能是 `blob:` / `data:`；从导航开始保存的 Network log 与页面 `performance` resource entries 都不得出现外部 worker/WASM 请求。仅检查主页面 performance entries 不能单独构成证据；
+5. 命令、commit、浏览器版本、产物文件清单、Worker URL、Network log 摘要与原始 JSON 结果写入 `docs/qa/a1-zip-reader-browser-probe.md`；
+6. 任一项失败即停在 T3a，不进入 T4，也不得在本计划内静默改为 `?url` worker/WASM 资产路线。
+
+**G5b 不在本后端切片伪装完成：**真实 iPhone 的在线打开、Service Worker controlled、飞行模式关闭网络、从主屏重启并完成真实备份恢复，仍按切片 §6 最终 runbook 执行；未过只能称 `BACKEND_READY / LIMITS_PROVISIONAL`。
 
 ---
 
@@ -511,7 +682,7 @@ it("rejects an entry that lies about originalSize and expands past the cap", () 
 | `exportedByDeviceId` | 非空字符串、`trim()` 后非空、**`value === value.trim()`** | `""` / `"   "` / `" a"` / `"a "` |
 | `exportedAt` | 匹配 `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$` **且 `new Date(Date.parse(value)).toISOString() === value`** | `"2026-08-05 12:00:00"` / **`"2026-02-30T00:00:00.000Z"`** / `"2026-13-45T00:00:00.000Z"` |
 | `eventCount` | 非负安全整数，且**精确等于**实际事件行数 | 少 1 / 多 1 / `-1` / `1.5` |
-| `contextCount` | 非负安全整数，且**精确等于**实际 context 条目数 | 同上 |
+| `contextCount` | 非负安全整数，且**精确等于**实际 context 条目数 | 少 1 / 多 1 / `-1` / `1.5` |
 | `maxHlc` | `{ wallTime, counter }` 均为非负安全整数；**等于**事件集派生值；无多余键 | 数值不符 / 缺 `counter` / 多一个键 |
 | `maxSeqByDevice` | 键为 canonical 非空 deviceId；值为**正**安全整数；键集与值**都**等于事件集派生结果 | 多一个设备 / 少一个设备 / 值偏大 / 值为 0 / 键含空白 |
 | `foldExternalState` | 数组且**必须为空** | `["importReceipts"]` |
@@ -524,26 +695,28 @@ it("rejects an entry that lies about originalSize and expands past the cap", () 
 
 `exportedAt` 同理：现有正则接受 `"2026-02-30T00:00:00.000Z"`（形状合法、日期不存在），而 `Date.parse` 会把它规范成 3 月 2 日，往返比对即可识破。
 
-因此 `packages/exchange/src/manifest.ts` 与 `manifest.test.ts` **纳入本任务写集**，`buildManifest` 收紧到与 reader **逐字同一套规则**：
+因此 `packages/exchange/src/manifest.ts` 提供唯一的 `assertManifestV1Shape`，覆盖上表**全部 shape 规则**，而不是只同步两个已经暴露的字段：
 
-- `exportedByDeviceId`：非空 且 `value === value.trim()`；
-- `exportedAt`：正则 且 `new Date(Date.parse(value)).toISOString() === value`。
+- `buildManifest` 先构造 candidate，再调用共享 validator；writer 必须拒绝 reader 会因 shape 拒绝的所有 manifest；
+- `validateManifest.ts` 先调用同一个 validator，再做依赖实际包内容的交叉校验：实际 event/context 数量、事件集派生 `maxHlc`、事件集派生 `maxSeqByDevice`；
+- 禁止在 reader 中复制第二份 shape validator。两套手工同步的规则迟早再次漂移。
 
-必须补两类测试：
+必须补三层测试：
 
-1. **非法闰日**：`"2026-02-30T00:00:00.000Z"`、`"2025-02-29T00:00:00.000Z"` 在**导出侧**即被拒；
-2. **exporter → reader 自兼容**：凡 `buildManifest` 接受的输入，其产出必须能通过 T4 的 reader 校验。这条是防漂移的结构性保证——它把"两套规则是否一致"变成一条会红的测试，而不是靠人记得同步改两处。
+1. **共享 shape validator 表驱动**：覆盖 T4 表中的每一行，包括非法闰日、非 canonical ID、负数/小数 count、非法 `maxHlc`、非法 `maxSeqByDevice`；
+2. **writer 负例**：上述 shape 错误必须在 `buildManifest` / 导出侧即被拒；
+3. **完整包自兼容**：`exportLedgerPackage → readPackage → validateManifest` 全绿，不能只把任意 `buildManifest` 输出直接喂给同一 validator 自证。
 
 ---
 
 ### T5: events.jsonl 解析与逐事件校验
 
-**解析顺序：先解析全部行 → 按规范全序排序 → 再做全部校验。** 这样行序不影响任何校验结果，must-not-fail 的"行序打乱"是结构性成立而非碰巧成立。
+**解析顺序：先解析全部行成 `unknown[]` → 每条先过 `validateEvent` 的单记录 shape/closed-schema 校验 → 仅把已验证的 `Event[]` 按规范全序排序 → 再做全部跨记录、时序与引用校验。** 不得把未经验证的 JSON 强转成 `Event` 后交给 comparator：缺失 `hlc` 等字段会让排序器在 schema Gate 之前抛出无关异常。所有会受输入行序影响的检查都必须发生在排序之后，因此 must-not-fail 的“行序打乱”仍是结构性成立而非碰巧成立。
 
 校验项：
 
 - 每行一个 JSON 对象；空行只允许出现在文件末尾；任何解析失败拒绝；
-- 每条过 `validateEvent`（core 已导出，`packages/core/src/events.ts:531`）；
+- 每条过 `validateEvent`（core 已导出，`packages/core/src/events.ts:531`），通过后才允许收窄为 `Event` 并进入 canonical sort；
 - **`eventId` 精确等于 `` `${deviceId}:${seq}` ``**（`ledgerRuntime` 铸 id 的方式）；
 - **`(deviceId, seq)` 组合唯一**；
 - `eventId` 全局唯一；
@@ -566,7 +739,7 @@ it("rejects an entry that lies about originalSize and expands past the cap", () 
 
 #### T5.2 负例
 
-`eventId` 与 `${deviceId}:${seq}` 不符；`deviceId` / `eventId` 首尾含空白；同一 `deviceId` 重复 `seq`；`occurredAt > recordedAt`；未撤销 capture 的 context 缺失；events.jsonl 中间出现空行。
+`eventId` 与 `${deviceId}:${seq}` 不符；`deviceId` / `eventId` 首尾含空白；同一 `deviceId` 重复 `seq`；`occurredAt > recordedAt`；未撤销 capture 的 context 缺失；events.jsonl 中间出现空行。另加一条缺失/畸形 `hlc` 的输入，断言错误来自 `validateEvent` 且 canonical comparator 调用次数为 0，守住“先验证单记录 shape、后排序”的边界。
 
 ---
 
@@ -611,6 +784,10 @@ export interface LedgerRestorePlan {
 
 `maxSeqByDevice` 确定性派生自事件集（复用 `deriveWatermark`），与 manifest 声明值交叉校验（不符即拒，属 T4）。字段名与 storage 的 `RestoreLedgerInput` 一致，以便 T11 的编译期断言成立。
 
+`deriveWatermark` 必须用 `Map<string, number>` 累积，再经 `Object.fromEntries` 生成可序列化记录；不得把任意 deviceId 直接赋给普通 `{}`。`__proto__`、`constructor`、`toString` 都属于当前合法 deviceId 域，必须作为 own enumerable keys 保留，不能为了绕过容器缺陷临时禁止这些名称。
+
+`watermark.test.ts` 加特殊名称与普通 ID 混合样本，断言 `Object.keys` 精确、`Object.hasOwn` 为 true、最大 seq 正确、canonical JSON 后键仍存在；T4 加 exporter→reader 正例，T8 加对应 `device-sequence:__proto__` / `:constructor` / `:toString` clock key 用例。这些是普通回归，不改变冻结的 11 + 3 数量。
+
 ---
 
 ### T8: `restoreLedger` 原子写入
@@ -630,7 +807,8 @@ export interface LedgerRestorePlan {
 9. 上述 6–8 的错误消息必须说明是**"目标库非空"**，不是"内容相同所以跳过"（切片 §5.2.1 第 2 条）；
 10. 成功后三个 store 内容正确，图片 Blob 逐字节等于输入字节，且 `blob.type === mediaType`；
 11. **clock 写入精确**：`global-hlc` 严格大于 `input.globalHlc`；`input.maxSeqByDevice` 每个历史设备都有 `device-sequence:<id>` 记录且值正确；**`newDeviceId` 没有 `device-sequence` 记录**；**clock 的键集合恰好是** `{"global-hlc", "restore-commit"} ∪ {"device-sequence:<id>" | id ∈ maxSeqByDevice}`，多一个键即失败；
-11a. **durable commit marker**（§3.10.4）：`restore-commit` 记录**在同一个事务内**与数据一起提交，内容含 `newDeviceId` 与提交时刻。必须有一条测试证明**事务失败时它也不存在**——若它能在数据没写成的情况下留下，UI 会把一个失败的恢复读成 `COMMITTED` 并提升新身份，比没有 marker 更糟；
+11a. **durable commit marker**（§3.10.4）：`committedAt` 在开事务前生成并通过 canonical UTC 校验；同一事务写入精确 `RestoreCommitRecord`。close/reopen 后只读 accessor 必须读出完全相同的 record；事务失败时 marker 必须不存在；marker reader 对缺字段、错误 `type`、非法时间、额外字段或非 canonical id 抛专属错误；
+11b. **prototype-name 水位**：输入含 `__proto__`、`constructor`、`toString` 历史设备时，clock 必须分别存在正确的 `device-sequence:<id>` 记录，不能被对象原型吞掉；
 12. 写入中途失败（注入会抛的 put）→ 事务 abort、目标库逐条不变；
 13. **同一输入连续恢复两次**：首次成功；第二次因非空被拒；拒后逐条不变（切片 §5.2.1 四条）；
 14. 既有 `appendCapture` 全部测试无回归（§3.7）；
@@ -657,7 +835,8 @@ export type EquivalenceFailureCode =
   | "L2_ITEM_VIEW"
   | "L2_REVIEW_QUEUE"
   | "L3_IDENTITY"
-  | "L3_CLOCK";
+  | "L3_CLOCK"
+  | "L3_RESTORE_COMMIT";
 
 export interface EquivalenceFailure {
   readonly code: EquivalenceFailureCode;
@@ -672,16 +851,17 @@ export interface EquivalenceReport {
 
 **必须跑完全部层再返回，不得首错短路。** 否则一个 L1 差异会掩盖 L2/L3 是否真的执行过，而"某层从未运行"与"某层通过"在只看 `ok` 时无法区分。必须有一条测试：制造同时触发 L1 与 L2 的差异，断言 `failures` 里**两个 code 都在**。
 
-**L1**：按 `db.objectStoreNames` **动态枚举**。`events` / `contexts` 属精确相等类（`structurallyEqual`，Blob 逐字节）；`clock` 属具名语义类（交给 L3）；**任何未分类 store 产出 `L1_STORE_UNCLASSIFIED` 并判失败**。必须有一条测试：给测试库临时加第三个 store，断言验证器失败。
+**L1**：按 `db.objectStoreNames` **动态枚举**。`events` / `contexts` 属精确相等类（`structurallyEqual`，Blob 逐字节）；`clock` 属具名语义类（交给 L3）；**任何未分类 store 产出 `L1_STORE_UNCLASSIFIED` 并判失败**。必须有一条测试：在现有 `events` / `contexts` / `clock` 之外临时加**第四个未知 store**，断言验证器失败。
 
 **L2**：`deriveLedger` 的完整 `ItemView` 逐字段相等 → `L2_ITEM_VIEW`；复习队列序列 → `L2_REVIEW_QUEUE`（探针注入）。
 
-**L3（全部只读，不得改动被验证的库）**：
+**L3（全部只读，不得改动被验证的库）**：验证器输入显式携带 `expectedNewDeviceId`，不得从 marker 反推期望身份。
 
 - `global-hlc` 已持久化且**严格大于**包内最大 HLC；
 - 每个历史设备的 `device-sequence:<id>` 水位已持久化且值正确；
 - **`newDeviceId` 不存在 `device-sequence` 记录**；
-- **clock 的键集合精确等于** `{"global-hlc", "restore-commit"} ∪ {"device-sequence:<id>" | id ∈ maxSeqByDevice}`——新身份的 `device-sequence` 键、任何多余的旧身份键都不得存在（`restore-commit` 见 §3.10.4）；
+- **clock 的键集合精确等于** `{"global-hlc", "restore-commit"} ∪ {"device-sequence:<id>" | id ∈ maxSeqByDevice}`——新身份的 `device-sequence` 键、任何多余的旧身份键都不得存在；
+- `restore-commit` 必须通过 §3.10.4 的封闭 shape/canonical 校验，且 `record.newDeviceId === expectedNewDeviceId`。marker 缺失、错误 id、缺 `committedAt`、非法时间、错误 `type`、额外字段均产出专属 **`L3_RESTORE_COMMIT`**，不能混入泛化 `L3_CLOCK`；
 - `clock` store 被清空 → 专属 **`L3_CLOCK`**，不得只表现为泛化的"某处不等"。
 
 **"首次 reserve 返回 seq === 1" 必须在一次性克隆库上测**，绝不能在正式恢复库上调 `reserveEventCoordinates`——那会写 clock、污染刚恢复的账本，让验证行为本身改变被验证对象。提供 `cloneLedgerDatabase(sourceName, targetName)` 助手，reserve 只在克隆上跑。
@@ -701,13 +881,13 @@ export type ReviewQueueProbe = (
 
 ---
 
-### T11: apps/web 集成测试（含依赖边界改动）
+### T11: apps/web 集成测试（复核依赖边界）
 
-**Files:** `apps/web/package.json`、`pnpm-lock.yaml`、新建 `apps/web/src/features/ledger/restoreIntegration.test.ts`
+**Files:** 新建 `apps/web/src/features/ledger/restoreIntegration.test.ts`
 
-exchange 与 storage **互不依赖**，所以两者的集成只能在同时依赖它们的地方验证。`apps/web` 目前只依赖 `@tenjin/core` 与 `@tenjin/storage-indexeddb`，必须补齐：
+exchange 与 storage **互不依赖**，所以两者的集成只能在同时依赖它们的地方验证。T3a 已把 `@tenjin/exchange` 作为 devDependency 加入 `apps/web`、更新 lockfile，并让 web 的 `pretest` / `pretypecheck` / `prebuild` 构建 exchange。T11 不得重复安装、改 scripts 或改 lockfile，只复核这些前置仍成立：
 
-- [ ] **Step 1: `apps/web/package.json` 加 devDependency**
+- [ ] **Step 1: 验证 T3a 已留下 devDependency**
 
 ```json
 "devDependencies": {
@@ -716,21 +896,21 @@ exchange 与 storage **互不依赖**，所以两者的集成只能在同时依�
 }
 ```
 
-devDependency 而非 dependency：生产代码不引用它，只有集成测试引用。
+必须仍是 devDependency 而非 dependency：生产代码不引用它，只有 QA probe 与集成测试引用。若缺失，说明 T3a checkpoint 不完整，应回到 T3a 修复；不得在 T11 静默补装并掩盖前一 Gate 的缺口。
 
-- [ ] **Step 2: 三个 pre 脚本必须同时构建 exchange 与 storage**
+- [ ] **Step 2: 复核三个 pre 脚本仍同时构建 exchange 与 storage**
 
 ```json
-"pretest": "pnpm --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build",
-"pretypecheck": "pnpm --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build",
-"prebuild": "pnpm --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build"
+"pretest": "pnpm --workspace-concurrency=1 --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build",
+"pretypecheck": "pnpm --workspace-concurrency=1 --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build",
+"prebuild": "pnpm --workspace-concurrency=1 --filter @tenjin/storage-indexeddb --filter @tenjin/exchange build"
 ```
 
-用多个 `--filter` 而不是 `&&`：避免依赖 shell 的链式语法。两个包各自的 `prebuild` 会构建 core，无需再列。
+用多个 `--filter` 而不是 `&&`：避免依赖 shell 的链式语法。**必须保留 `--workspace-concurrency=1`**，因为两个 sibling 包各自的 `prebuild` 都会构建 core；并行运行会让两个 `tsc` 同时写 `packages/core/dist` 与同一个 `tsconfig.tsbuildinfo`。这里要求单写者串行执行，而不是依赖本机时序碰巧不冲突。
 
-- [ ] **Step 3: `pnpm install` 更新 lockfile**，并把 `pnpm-lock.yaml` 一并纳入本任务提交。
+从清理掉所有 workspace `dist/` 的干净 checkout 至少完整跑一次 web 的 `test` / `typecheck` / `build`，三条都必须退出 0；不得用已有 `dist/` 证明脚本正确。
 
-- [ ] **Step 4: 集成测试三块内容**
+- [ ] **Step 3: 集成测试六块内容**
 
 1. **结构兼容编译期断言**：把 exchange 产出的 `LedgerRestorePlan` 赋给 storage 的 `RestoreLedgerInput`。两个包互不依赖，这是唯一能证明它们没漂移的地方。
 
@@ -768,6 +948,7 @@ it("has a usable WebCrypto digest before any of this means anything", async () =
 3. **真实 undo 往返**（must-not-fail 第 3 条）：用真实采集路径造 capture，再用真实 `appendDiscard` 撤销（它会 GC 掉 context），然后 export → restore → 等价验证全绿。
 4. **真实 `buildReviewQueue` 探针**：断言源库与恢复库产出相同的 `(itemId, channel, prompt, reveal)` 序列，并**断言探针确实被调用了两次**（源库一次、恢复库一次）——一个从不调用探针的实现同样会报"序列相同"。
 5. **专属 failure 正向对照**：制造会改变复习队列的差异，断言 `failures` 里**出现 `L2_REVIEW_QUEUE`**，而不是只出现 `L1_CONTEXTS_MISMATCH` 就算数。
+6. **marker 关闭重开对照**：真实 restore 后 close/reopen，用公开只读 accessor 读取 marker，核对封闭 shape、canonical `committedAt` 与 `newDeviceId`；再分别注入 mismatch/malformed，断言 `L3_RESTORE_COMMIT` 而非仅键集合失败。
 
 ---
 
@@ -789,11 +970,11 @@ it("has a usable WebCrypto digest before any of this means anything", async () =
 | 8 | 清空 `clock` store | 恢复后 DB | T10 L3 | **`L3_CLOCK`**（专属） |
 | 9 | 篡改 manifest 的 `maxSeqByDevice` | package | T4 水位与事件不符 | `TypeError` / `maxSeq` |
 | 10 | **恢复后 `clock` 的 `global-hlc` 低于包内最大 HLC** | clock | T10 L3 | `L3_CLOCK` |
-| 11 | **篡改 `events.jsonl` / `manifest.json` 的压缩数据、不更新 CRC，且解压后仍是合法 UTF-8 / JSON / 通过 schema** | package | §3.3 的 CRC 校验 | **`CRC_MISMATCH`**；**依赖 CRC 路线冻结** |
+| 11 | **篡改 `events.jsonl` / `manifest.json` 的压缩数据、不更新 CRC，且解压后仍是合法 UTF-8 / JSON / 通过 schema** | package | T3 生产读包器（T0-G4 先证 raw + mapping） | **`CRC_MISMATCH`**，且 `cause` 为 zip.js `ERR_INVALID_SIGNATURE` |
 
 第 11 条是唯一能证明"CRC 校验真的在跑"的测试——其余全部校验对它无感，因为它构造成处处合法。
 
-**forged `originalSize` 的 zip bomb 保留为 T3 单测**（不占矩阵编号），但**必须存在**；它与第 11 条守的是两件不同的事：前者是体积，后者是完整性。
+**伪造 central `uncompressedSize` 的 zip bomb 保留为 T3 单测**（旧 fflate 草案称 `originalSize`；不占矩阵编号），但**必须存在**；它与第 11 条守的是两件不同的事：前者是体积，后者是完整性。
 
 **三条 must-not-fail（必须仍然 PASS）：**
 
@@ -819,12 +1000,16 @@ it("has a usable WebCrypto digest before any of this means anything", async () =
 
 ```bash
 pnpm --filter @tenjin/exchange typecheck
+pnpm --filter @tenjin/exchange build
+pnpm --filter @tenjin/exchange exec tsc -p tsconfig.public-api.json
 ```
+
+第三条必须使用 `lib: ["ES2023"]`、`types: []`、`skipLibCheck: false`；否则不能声称公共声明没有泄漏 DOM/Node/vendor 类型。
 
 全仓四条，全部退出 0：
 
 ```bash
-pnpm typecheck
+pnpm --workspace-concurrency=1 --recursive --if-present typecheck
 ```
 
 ```bash
@@ -832,14 +1017,14 @@ pnpm lint
 ```
 
 ```bash
-pnpm build
+pnpm --workspace-concurrency=1 --recursive --if-present build
 ```
 
 ```bash
-pnpm test
+pnpm --workspace-concurrency=1 --recursive --if-present test
 ```
 
-加 `git diff --check` 干净。
+这里刻意绕过根 `typecheck` / `build` / `test` wrapper：根脚本目前使用默认并发的 `pnpm --recursive`，会让 exchange/storage 两个 sibling 的 pre 脚本同时构建 core。`--workspace-concurrency=1` 是全仓 Gate 的单写者约束，不能省略。另加 `git diff --check` 干净。
 
 **`CROSS-REVIEW.md` Gate（定义已更正）**：它是用户自有的**未跟踪**文件，因此它**本来就会**出现在 `git status` 里（`?? CROSS-REVIEW.md`）——要求"不出现在任何 git status 输出里"是错的。正确判据是**三项与工作开始时一致**：
 
@@ -867,45 +1052,46 @@ $env:PATH = "$shim;$env:PATH"
 | # | 事项 | 决定 |
 |---|---|---|
 | 1 | T1 触碰 `ledgerRuntime.ts` / `createCapture.ts` | **批准**，限纯序列化提取 |
-| 2 | T11 新增 apps/web 集成测试 + 改 `package.json` / `pnpm-lock.yaml` | **批准**，仅测试与依赖声明，无生产代码 |
+| 2 | T3a/T11 新增 apps/web QA probe 与集成测试；T3a 加 devDependency、改三个 pre scripts 与 lockfile，T11 只复核并加测试 | **批准**，仅 QA/测试入口与依赖声明，不加入生产 PWA input；`apps/web/package.json` 归 T3a，`pnpm-lock.yaml` 只归 T0/T3a，T11 均不触碰 |
 | 3 | `structurallyEqual` 导出面 | **package-internal named export**；不进 root `index.ts`，不建 `/testing` |
 | 4 | `newDeviceId` 来源 | **调用方生成并传入**；storage 永不生成；必须 canonical（非空 / trim 后非空 / `value === value.trim()`） |
 | 5 | 禁用集合 | 事件全部 `deviceId` ∪ `manifest.exportedByDeviceId` |
-| 6 | localStorage 与 IndexedDB 一致性 | 由 §3.10 的状态机与六步协议保证；本轮只交付后端 |
+| 6 | localStorage 与 IndexedDB 一致性 | 由 §3.10 的 bootstrap/锁/marker 绑定状态机保证；本轮只交付后端 |
 | 7 | 单图 20 MiB | **正式产品约束** |
 | 8 | 其余限额 | **provisional security ceilings**，是拒绝阈值不是支持容量 |
 | 9 | ZIP64 | 本轮不引入；`entries <= 65_535`、`contexts <= 32_766` |
-| 10 | 最低支持设备 | **用户实际在用的 iPhone**。具体机型是 UI / 真机 Gate 的前置，**不阻塞后端**；限额冻结在那时进行 |
+| 10 | 最低支持设备 | **用户实际在用的 iPhone**。T3a 先守 browser bundle/runtime；具体 iPhone 属最终 G5b 与限额冻结输入，**不阻塞后端达到 BACKEND_READY / LIMITS_PROVISIONAL，但阻塞 A1 完成** |
 | 11 | exchange 测试用 crypto | **禁用 `node:crypto`**；用注入式确定性假摘要或预计算 fixture；真实摘要由 T11 集成测试证明 |
 | 12 | `TextDecoder` 窄声明 | **按 §3.5 当前写法执行**；若将来别处引入 `@types/node` 导致冲突，届时由 exchange 独立 typecheck 暴露并收敛 |
 | 13 | `events` 上限 200,000 | 保持 **provisional ceiling**，等真机数据再校准，不作为待决问题 |
 | 14 | 交付口径 | **BACKEND_READY / LIMITS_PROVISIONAL**；不得声称 A1 完成 |
-| 15 | **CRC 路线** | **已冻结为 B-reader-only**：写侧保留 fflate、导出字节合同一字不改；读侧新增 `@zip.js/zip.js`。exchange 因此**新增且仅新增这一个运行时依赖**（旧的"不得新增运行时依赖"作废） |
-| 16 | **恢复提交判据** | **durable commit marker**（§3.10.4），与恢复数据同事务提交；`COMMITTED` 是 marker 存在这一**事实**，不是"某 store 非空"这一**推断** |
+| 15 | **CRC 路线** | **已冻结为 B-reader-only**：写侧保留 fflate、导出字节合同一字不改；读侧精确锁 `@zip.js/zip.js@2.8.34` 根入口与 §3.3 配置。exchange 新增且仅新增这一个运行时依赖 |
+| 16 | **恢复提交判据** | **durable commit marker**（§3.10.4），与恢复数据同事务提交；只有“合法 marker 存在且 `marker.newDeviceId === pendingRestoreDeviceId`”才能判 `COMMITTED` |
+| 17 | **G5 分层** | T0 只做 Node/vendor/type Gate；T3a 做独立 browser bundle/runtime；真实 iPhone PWA 离线往返留在切片最终 G5b。不得把未执行的真机步骤写成 T0 PASS |
 
 ## 7. 仍需 owner 决定的问题
 
 **无。** 上一版唯一的阻塞项（CRC 路线）已冻结为 B-reader-only。
 
-余下的**不是决定而是 Gate**：**T0 必须全绿**（G1–G6，尤其 G6 类型边界）才可进 T3。T0 任一项失败即停止并上报，**不得自动改走路线 A，不得放宽任何安全边界**。
+余下的**不是决定而是 Gate**：T0 的 G0–G4 + G6 必须全绿，才可启动 T1/T2；T2 完成后才可进入 T3；T3a-G5a 全绿才可进入 T4。任一项失败即停止并上报，**不得自动改走路线 A，不得放宽任何安全边界**。最终 G5b 未过时只能保持 `BACKEND_READY / LIMITS_PROVISIONAL`。
 
 ---
 
 ## 8. 自检结果
 
-**规格矛盾**：对照切片 v1.5 逐条核。抽象模式只出现在"必须拒绝"语境（T4）；恢复语义按切片 §5.2.1 四条写进 T8 测试 13；"零写入风险"的错误措辞已在切片 §7.2 作废，本计划 §3.6 用事务纪律取代；交付口径统一为 BACKEND_READY / LIMITS_PROVISIONAL；负样本数量、切片与计划均为 11 + 3。CRC 冻结后已清理三处旧说法：§0 的"不得新增运行时依赖"、§3.3 的"路线 B 必须替换 exporter"、依赖图与 Tech Stack。**未发现残留矛盾。**
+**规格矛盾**：对照切片 v1.6 逐条核。抽象模式只出现在"必须拒绝"语境（T4）；恢复语义按切片 §5.2.1 四条写进 T8 测试 13；"零写入风险"的错误措辞已在切片 §7.2 作废；交付口径统一为 BACKEND_READY / LIMITS_PROVISIONAL；负样本数量均为 11 + 3；CRC 路线、T0 独占、G5a/G5b 分层与 marker/pending 绑定已机械同步。
 
-**永远 PASS 的断言**：① 声明体积上限——实现若改成"先解压再判断"，超限测试仍会通过，故 T3 强制一条"证明未解压即拒"的断言；② 伪造 `originalSize`——只信中央目录等于没有防护，故 §3.4 强制按**实际产出**计量、T0-G3 单列为 Gate；③ **CRC**——不校验 CRC 时，一个"处处合法但内容被改"的包会通过全部其余校验，故立为 T0-G4 与矩阵第 11 条；④ UTF-8——非 fatal 解码器让该校验永不触发，§3.5 写死 fatal，exchange typecheck 列为独立 Gate 并进 T0-G6；⑤ 摘要自洽——"改字节同时改摘要"能骗过形状与自洽校验，T6 强制专打此假绿的测试；⑥ **真实摘要**——两个同样错的摘要互相比对也会"通过"，故 T11 先断言 `crypto.subtle` 存在并核对 NIST 向量，再谈往返；⑦ 复习队列——只断言"相同"无法区分"没在比"，T11 强制断言探针被调用两次 + 专属 `L2_REVIEW_QUEUE`；⑧ 首错短路——一个 L1 差异会掩盖 L2/L3 是否执行过，T10 强制"两个 code 同时出现"；⑨ **空库判定**——只查 `events` 会把"打开过但没采集"（clock 非空）的库判为空，T8 测试 6–8 三个方向各一条；⑩ **`COMMITTED` 判据**——从"某 store 非空"推断已提交，会把"非空库被拒 + 残留 pending"误读成已提交并提升新身份，故改为 durable marker 并配 U3；⑪ **exporter↔reader 漂移**——导出器接受而恢复器拒绝的包，只有在真要恢复那天才暴露，故 T4.1 加一条 exporter→reader 自兼容测试把它变成会红的检查。
+**永远 PASS 的断言**：① 压缩输入超限必须在 reader factory 前拒绝；② 声明展开量超限必须保持 `getData` 零调用；③ 伪造 `uncompressedSize` 由实际输出计数 + abort 抓住；④ CRC 同时钉住原生 `ERR_INVALID_SIGNATURE` 与项目映射；⑤ G6 用 `skipLibCheck: false` 的 dist consumer，不能只看 source typecheck；⑥ UTF-8 必须 fatal；⑦ 摘要自洽用“改字节同时改摘要”反例；⑧ 真实摘要先核 NIST 向量；⑨ 复习队列探针调用两次并有专属 failure；⑩ 不首错短路；⑪ storage 空库与 UI pre-pending 各有三种单-store 用例；⑫ marker 必须封闭校验并绑定 pending；⑬ manifest 只允许一个共享 shape validator，并用完整 `exportLedgerPackage → readPackage → validateManifest` 自兼容测试守住；⑭ prototype-name deviceId 必须穿过 watermark/export/restore/clock 全链路。
 
 **错误 fixture**：T6 负样本必须用**生产形状**摘要（context hash 为 `sha256:` + 64 位小写 hex，image sha256 为裸 64 位 hex）。导出器那轮的教训是短摘要 fixture 会被更早的格式校验先拦下，目标断言从未执行。
 
 **事务自动提交**：§3.6 写死"事务内不得 await 非 IndexedDB Promise"并给出既有代码先例；T8 实现红线重复一遍。
 
-**未知 store 漏检**：T10 要求动态枚举 + 分类穷尽 + 未分类即 `L1_STORE_UNCLASSIFIED`，并强制"临时加第三个 store 必须失败"的测试。
+**未知 store 漏检**：T10 要求动态枚举 + 分类穷尽 + 未分类即 `L1_STORE_UNCLASSIFIED`，并强制在现有三个 store 之外"临时加第四个未知 store 必须失败"的测试。
 
 **验证器污染被验证对象**：T10 的 L3 全只读；"首次 reserve seq === 1"只在一次性克隆库上跑。
 
-**依赖边界**：exchange 与 storage 互不依赖，集成只在 `apps/web`；为此 T11 显式纳入 `package.json` 与 `pnpm-lock.yaml` 写集，并把三个 pre 脚本改为同时构建两个包——否则集成测试会在 CI 上因构建顺序失败，而本地因残留 `dist/` 侥幸通过。
+**依赖边界**：exchange 与 storage 互不依赖，集成只在 `apps/web`；T3a 同批加入 exchange devDependency、独立 QA probe，并把 `pretest` / `pretypecheck` / `prebuild` 改为用 `--workspace-concurrency=1` 串行构建两个包；T11 只复核并加集成测试。否则 T3a 自己就会在 clean checkout 的 web/root typecheck 或 build 中因缺失 `dist/` 失败，而并发构建又会让两个包的 `prebuild` 同时写 core 产物。
 
 ## 9. 变更记录
 
@@ -913,5 +1099,6 @@ $env:PATH = "$shim;$env:PATH"
 |---|---|---|---|---|
 | v1.0 | 初稿 | 冻结恢复器 + 等价验证器 + 负样本矩阵的 12 个 TDD 任务、文件写集、依赖图、关键设计决定与待决问题 | Fable 5 | 2026-08-07 |
 | v1.1 | 收口 | active-capture 引用规则、`ContextRecord` 全约束、`eventId` 形状与排序、Clock Gate 只读化、类型边界、`TextDecoder` 窄声明、ZIP 流式实际产出、分层 failure code、限额分类、身份与激活协议 | Fable 5（据 Codex 复审） | 2026-08-07 |
-| v1.3 | 收口 | **CRC 路线冻结为 B-reader-only**（写侧保留 fflate、导出字节合同不动；读侧新增 `@zip.js/zip.js`），并新增 **T0 硬 Gate**（G1 严格模式 / G2 加密·multi-disk·ZIP64·不支持压缩法的拒绝清单 / G3 计数 WritableStream + AbortSignal 按实际产出限额 / G4 CRC_MISMATCH / G5 Node 与目标 Safari 双路径 / G6 ES2023 无 DOM 类型边界），失败即停不得改走 A；同步清理"不得新增运行时依赖"与"B 要替换 exporter"两处旧说法。**修 UI 激活状态机**：可写 runtime 全程持 shared lock、恢复方先让位再取 exclusive lock、验空移到写 pending 之前、`COMMITTED` 改由 durable commit marker 判定（连带 T8 写 marker、T10 键集合含 `restore-commit`），新增 U3。T4.1 消除 exporter↔reader 漂移（`exportedByDeviceId` canonical、`exportedAt` 往返比对、非法闰日与自兼容测试），`manifest.ts` 纳入写集。T11 指定 Node 环境并先验 `crypto.subtle` 与 NIST 向量 | Fable 5（据 Codex 复审） | 2026-08-07 |
 | v1.2 | 收口 | T11 纳入 `apps/web/package.json` 与 `pnpm-lock.yaml` 写集并改三个 pre 脚本；exchange 测试禁用 `node:crypto`；新增 §3.3 CRC 完整性（两条路线、阻塞 T3、矩阵第 11 条）；恢复 clock 负样本并把 forged size 降为 T3 单测，矩阵定为 11 + 3；身份收紧为三条 canonical 校验；空库改为三 store `count === 0` 并加三方向负例；L3 加 clock 键集合精确断言；T6 补 `byteLength` 下界、`blob.type === mediaType`、trim 非空；T4 展开 manifest 全字段表；新增 §3.10 UI 激活状态机与 U1/U2 Gate；机械同步（切片 v1.3、CROSS-REVIEW Gate 定义、状态改"计划待审"、最低支持设备、`TextDecoder` 与 `events` 上限移出待决） | Fable 5（据 Codex 复审） | 2026-08-07 |
+| v1.3 | 收口 | **CRC 路线冻结为 B-reader-only**（写侧保留 fflate、导出字节合同不动；读侧新增 `@zip.js/zip.js`），并新增 **T0 硬 Gate**（G1 严格模式 / G2 加密·multi-disk·ZIP64·不支持压缩法的拒绝清单 / G3 计数 WritableStream + AbortSignal 按实际产出限额 / G4 CRC_MISMATCH / G5 Node 与目标 Safari 双路径 / G6 ES2023 无 DOM 类型边界），失败即停不得改走 A；同步清理"不得新增运行时依赖"与"B 要替换 exporter"两处旧说法。**修 UI 激活状态机**：可写 runtime 全程持 shared lock、恢复方先让位再取 exclusive lock、验空移到写 pending 之前、`COMMITTED` 改由 durable commit marker 判定（连带 T8 写 marker、T10 键集合含 `restore-commit`），新增 U3。T4.1 消除 exporter↔reader 漂移（`exportedByDeviceId` canonical、`exportedAt` 往返比对、非法闰日与自兼容测试），`manifest.ts` 纳入写集。T11 指定 Node 环境并先验 `crypto.subtle` 与 NIST 向量 | Fable 5（据 Codex 复审） | 2026-08-07 |
+| v1.4 | 收口 | T0 改为独占 Phase 0；精确锁 zip.js 版本/根入口/运行配置，worker/reader/entry options 逐次显式传入并以 G0 防死常量（含 `transferStreams` 不能只走全局 `configure()`），补 filename-only strict/balanced 完整控制、archive/entry 两类 multi-disk、entry/archive 两类 ZIP64、EOCD 相对定位与 magic-byte 负控制、CRC raw+mapping、三层限额与 `skipLibCheck:false` dist consumer；actual-output Gate 使用 header 声明恰等 cap、真实输出 cap+1 的 vendor fixture，并以 sticky `limitExceeded` 保证 `PACKAGE_OUTPUT_LIMIT` 不被 vendor size/abort/close 错误覆盖。将原不可执行 G5 拆成 T3a browser Gate 与最终 iPhone G5b，T3a 用 pre-module Worker spy + 全新 profile 的首次离线执行 + Network log 守住 worker 内部请求盲区。条目枚举冻结为 `getEntriesGenerator()`，逐 yield 执行项目 whitelist/duplicate Gate并在正常路径完整 exhaust，避开 strict `getEntries()` 在返回前抢先抛错。修复自身 shared→exclusive 自锁、锁内重读 bootstrap 状态、marker/pending 绑定与 U3 单-store 矩阵；writer/reader 共用完整 manifest shape validator；watermark 改为 prototype-safe 并补特殊 deviceId 全链路；events 改为先逐条验证再排序；T3a 前移 web 依赖与 pre 脚本，并用单并发串行构建消除 clean-checkout 与 core 产物竞态；机械同步依赖图、第四个未知 store与变更顺序 | Codex | 2026-08-07 |

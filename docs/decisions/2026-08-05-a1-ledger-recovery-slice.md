@@ -2,7 +2,7 @@
 
 **日期：** 2026-08-05（2026-08-07 修订，见 §9）
 
-**状态：** 已冻结范围；导出器已合入 `fa4e048`。**恢复器：计划待审；批准后开工**（其中 CRC 路线须先由 owner 冻结，见计划 §3.3）
+**状态：** 已冻结范围；导出器已合入 `fa4e048`。CRC 路线已冻结为 **B-reader-only**；恢复器计划已完成修订，待用户批准后先执行独占 T0；T0 全绿后启动 T1/T2，T2 完成后进入 T3，T3a 浏览器 Gate 全绿后进入 manifest 及之后任务。
 
 **性质：** 补 `HANDOFF.md` 阶段 A1 Gate 的既有欠债，**不是任何新功能的前置**
 
@@ -34,7 +34,7 @@
 
 - Coach 导入、粘贴解析、预览确认——等 Stage 0 判定；
 - `focus` 字段与 contextHash 变更；
-- **不升 DB 到 v3**（本切片不新增 object store，只读现有 events / contexts / clock）；
+- **不升 DB 到 v3**（本切片不新增 object store，仅使用现有 events / contexts / clock 三个 store；恢复仍会原子写入空库）；
 - 复习改造（时间预算、材料档位、间隔排序）；
 - 增量包、跨设备合并、双 promote、redaction 执行、冲突收件箱；
 - 恢复到**非空**账本（合并语义属 A2）。
@@ -73,12 +73,14 @@ contexts/           原文层；是否包含取决于模式
 
 - `redactions.jsonl` 目前必然为空（redaction 未实现）。manifest schema 必须**预留**该文件与相关字段，恢复器必须能接受它缺失或为空。
 - `manifest.foldExternalState` 是**前向兼容闸，不是插槽**。一个空数组不能证明将来加入导入台账不破格式，所以不作此声称。它的语义是：**非空即表示该包携带了本版不认识的 fold 外状态，恢复器必须拒绝整个包**，而不是静默丢弃——静默丢弃正是「恢复看似成功、实则幂等信息已丢」的假绿。v1 导出恒为空数组；真正加入台账时**明确升 `schemaVersion` 到 2**，届时再冻结 descriptor 结构。现在不冻结，因为台账形状取决于 Stage 0 结果，提前设计就是提前造平台。
+- manifest 的 writer 与 reader 必须共用唯一的 v1 shape validator；reader 只额外负责与实际 entries/events 做数量、`maxHlc`、`maxSeqByDevice` 交叉核验。不得维护两套手工同步规则。
+- `maxSeqByDevice` 必须完整保留所有当前合法 deviceId，包括 `__proto__`、`constructor`、`toString`；实现必须使用 prototype-safe 容器，不能临时禁止这些名字来掩盖容器缺陷。
 
 ## 4. 恢复的硬要求
 
 1. **全部校验在写入之前完成**：schema、包结构、`event_id` 唯一性、每设备 `seq` 单调、`occurred_at ≤ recorded_at`、事件与 context 交叉引用、图片摘要与字节一致、时钟/水位自洽。
 2. **任何异常零写入**：失败时目标库逐字未变，不留半恢复状态。
-3. **恢复后铸新 `device_id`**：`HANDOFF.md` §5.2「永不复用旧身份」。且本机 HLC 基线必须抬到已见最大值之上，下一次 `reserveEventCoordinates` 的 `seq` 从 1 起。
+3. **恢复后使用全新 `device_id`**：`HANDOFF.md` §5.2「永不复用旧身份」。UI/调用方生成 canonical `newDeviceId` 并传入；storage 只校验 canonical/禁用集合、写时钟与同事务 commit marker，永不自行生成身份。且本机 HLC 基线必须抬到已见最大值之上，下一次 `reserveEventCoordinates` 的 `seq` 从 1 起。
    - 这一条不是形式主义：`highWaterFromEvents` 在 clock 记录缺失时会从事件重建高水位；若复用旧 `device_id`，历史上被烧掉的 seq 空洞会被重新发放，而那些号可能已被别的副本用过 → 同 `eventId` 不同内容 → 交换时中毒，且延迟触发。
 
 ## 5. 验收 Gate
@@ -100,7 +102,7 @@ round-trip 与摘要比较**可以作为辅助断言**，但不得作为唯一 o
 | **L0 失败路径先证** | 喂一个中途截断的包，断言恢复抛错且目标库逐字未变（`HANDOFF.md` §5.4「导入中途被系统杀掉时，旧工作副本保持不变」） |
 | **L1 存储级独立读取（分类穷尽）** | 绕开导出器，用 idb 直接对源库与恢复库按 `db.objectStoreNames` **动态枚举**。每个 store 必须落进下列两类之一，**未分类的 store 一律判失败**：<br>· **精确相等类**：`events`、`contexts`——复用 `structurallyEqual`（已含 Blob 逐字节、循环引用处理）比对，断言键集合相等 + 逐条相等 + 计数相等；<br>· **具名语义类**：`clock`——**不做逐条相等**，只按 L3 验证语义连续性（见下）。<br>「未分类即失败」是刻意的：将来新增的 store（首先会是导入台账）不能因为没人想起它而静默逃过比对，必须强制有人显式决定它属于哪一类。 |
 | **L2 派生态等价** | `deriveLedger` 的 `ItemView` 逐字段相等（含 `channels` / `validPassDates` / `atRiskSince` / `lastFailureAt`）；`buildReviewQueue` 在同预算下产出相同的 `(itemId, channel, prompt, reveal)` 序列。（抽象交换包的对应断言——R/L/P 状态一字不变、复习队列缩减到写死的确定条数——随该模式一并暂缓，见 §3.1。） |
-| **L3 身份与时钟连续性** | **全部只读**，验证器不得改动被验证的库：① `global-hlc` 已持久化且严格大于包内最大 `hlc`；② 包内每个历史设备的 `device-sequence` 水位已持久化且值正确；③ 新 `device_id` 在首次 reserve 之前**不存在** `device-sequence` 记录。「首次 `reserveEventCoordinates` 返回 `seq === 1`」必须在**一次性克隆库**上验证——在正式恢复库上调用它会写 clock、污染刚恢复的账本，让验证行为本身改变被验证对象。`clock` store 被清空必须产生**专属的 `L3_CLOCK`** failure，不得只表现为泛化的"某处不等"。 |
+| **L3 身份与时钟连续性** | **全部只读**，验证器不得改动被验证的库：① `global-hlc` 已持久化且严格大于包内最大 `hlc`；② 包内每个历史设备的 `device-sequence` 水位已持久化且值正确，包括 JS prototype names；③ 新 `device_id` 在首次 reserve 之前**不存在** `device-sequence` 记录；④ `restore-commit` 是封闭、canonical 的 `RestoreCommitRecord`，且 `record.newDeviceId` 与 expected new device id 完全相同，缺失/畸形/mismatch 产生专属 `L3_RESTORE_COMMIT`。「首次 `reserveEventCoordinates` 返回 `seq === 1`」只在**一次性克隆库**上验证。`clock` 被清空产生专属 `L3_CLOCK`。 |
 | **L4 重复恢复语义** | 见 §5.2.1。**泄漏 Gate 随抽象模式一并暂缓**：本切片不产出抽象包，因此不存在"不含原文"这个负向结论可证；完整备份本就应当携带全部原文，对它做泄漏断言是无意义的。导出器已建好扫描器并用**正向对照**证明它确实能看穿 zip（`packages/exchange/src/inspectPackage.ts`），抽象模式恢复时直接启用，不需要重建。 |
 | **L5 会失败的证明** | 见下方负样本矩阵；每个负样本都**必须**让验证器非零退出 |
 
@@ -129,9 +131,9 @@ round-trip 与摘要比较**可以作为辅助断言**，但不得作为唯一 o
 | 8 | 清空 clock store | 时钟/水位损坏 |
 | 9 | 篡改 manifest 的各 device 最大 seq | 水位自洽 |
 | 10 | 恢复后 `clock` 的 global-hlc 低于包内最大 hlc | L3 语义连续性（取代原「抽象包混入原文」一条，后者随抽象模式暂缓） |
-| 11 | 篡改 `events.jsonl` / `manifest.json` 的**压缩数据**、不更新 CRC，且解压后仍是合法 UTF-8 / JSON / 通过 schema | ZIP 完整性（`CRC_MISMATCH`）。这是唯一能证明"CRC 校验真的在跑"的测试——其余全部校验对它无感，因为它构造成处处合法。CRC 路线已冻结为 **B-reader-only**（读侧 `@zip.js/zip.js`）；本条**依赖计划的 T0 硬 Gate 全绿** |
+| 11 | 篡改 `events.jsonl` / `manifest.json` 的**压缩数据**、不更新 CRC，且解压后仍是合法 UTF-8 / JSON / 通过 schema | ZIP 完整性：T0-G4 先钉住 zip.js 原始 `ERR_INVALID_SIGNATURE` 与项目映射，T3 生产读包器必须报 `CRC_MISMATCH` 并保留 cause |
 
-伪造 `originalSize` 的 zip bomb **保留为解包器单测**（不占矩阵编号）但必须存在：它与第 11 条守的是两件不同的事——前者是**体积**，后者是**完整性**。
+伪造 central `uncompressedSize` 的 zip bomb（旧 fflate 草案称 `originalSize`）**保留为解包器单测**（不占矩阵编号）但必须存在：它与第 11 条守的是两件不同的事——前者是**体积**，后者是**完整性**。
 
 **关于泄漏扫描器**（本切片不使用，记录其纪律供抽象模式恢复时套用）：扫描必须**先解压全部条目再扫描解压后的内容**。直接扫描 zip 字节是无效断言——包是 deflate 压缩的，明文本来就搜不到，那样的检查即使数据确实在包里也会通过。扫描器本身必须先用**正向对照**证明它有效（对完整备份断言哨兵串**确实能被找到**），再用于证明任何"不含原文"的负向结论。导出器已按此建成并通过正向对照。
 
@@ -145,27 +147,27 @@ round-trip 与摘要比较**可以作为辅助断言**，但不得作为唯一 o
 
 ## 6. 真机 runbook（切片的最终 Gate）
 
-在真实 iPhone 主屏 PWA 上完成一次：**完整备份 → 清空测试账本 → 恢复 → 继续记录和复习**。
+在真实 iPhone 主屏 PWA 上完成最终 **G5b**：**完整备份 → 清空测试账本 → 恢复 → 继续记录和复习**。
 
 ⚠️ **必须用测试账本，不得用真实账本。** 清空的机制是删除主屏图标（`HANDOFF.md` §11.6：删除主屏图标会删除本机工作副本），这是**不可逆**的。若确实只有一个真实账本可用，则必须先在桌面环境用同一个备份包完成一次成功恢复并通过 L1–L3，才允许在真机上清空。
 
-同时记录：飞行模式下能否导出、包体积、恢复耗时、以及恢复后能否继续正常采集与复习。
+执行并记录：设备型号、iOS/Safari 版本、commit SHA；在线打开并等待 Service Worker controlled；关闭网络并开启飞行模式；从主屏重新启动；在离线状态完成恢复、继续采集与复习。还要记录包体积、恢复耗时、资源请求与是否发生 worker/WASM 外部取数。T3a 的桌面 browser probe 不能替代此真机 Gate；此项未过只能称 `BACKEND_READY / LIMITS_PROVISIONAL`。
 
 ## 7. 切片顺序（每步自带 Gate，不过就停在那里）
 
 1. **导出器**（✅ 已完成，合入 `fa4e048`）：canonical 排序 + manifest + **仅完整备份**。Gate：产出包能被独立脚本解析；泄漏扫描器建成并通过正向对照。
-2. **恢复器**：解析 → 全量校验 → 写入空库 → 铸新 `device_id` → 抬 HLC 基线。Gate：L0 截断包失败后旧库逐字未变。
-3. **等价验证器 + 负样本矩阵**：Gate：**11 条负样本全部能红 + 3 条 must-not-fail 仍绿**。
+2. **恢复器**：解析 → 全量校验 → UI/调用方传入全新 `newDeviceId` → storage 校验身份 → 写入空库并同事务写 commit marker → 抬 HLC 基线。Gate：L0 截断包失败后旧库逐字未变。
+3. **等价验证器 + 负样本矩阵**：Gate：**11 条负样本全部能红 + 3 条 must-not-fail 仍绿**；真实 undo 往返完成后才能宣称本步通过。
 4. **数据页可操作入口**：导出、恢复、风险提示文案。Gate：界面明确说明这是**完整备份**、包含全部原文与图片原始字节，以及恢复只能写入空账本。**本切片没有第二种模式可供命名。**
 5. **真机往返**：Gate：§6 全过。
 
 ### 7.1 交付口径：UI 完成前只能称 BACKEND_READY（2026-08-07）
 
-第 2、3 步完成后**不得**声称"端到端恢复已交付"或"A1 Gate 已过"。恢复能力要真正可用，依赖第 4 步 UI 落地的六步激活协议（禁写 → 写并读回 `pendingRestoreDeviceId` → restore → 提升为 `tenjin.deviceId` → 关闭 repository → reload），因为 `deviceId` 存在 localStorage、时钟存在 IndexedDB，是两个独立存储；只写对其中一个就会出现"新账本配旧身份"。
+第 2、3 步完成后**不得**声称"端到端恢复已交付"或"A1 Gate 已过"。恢复能力要真正可用，依赖第 4 步 UI 落地完整激活链：bootstrap 先取得 shared 并在锁内重读 pending，只有确认无 pending 后才读身份并创建 runtime；进入恢复时禁写并释放自身 shared → 其它 runtime 让位 → exclusive 内重读 pending/marker/store → 三-store 验空 → 写并读回 pending → restore+marker 同事务 → marker/pending 绑定验证 → 提升 → close/reload。`deviceId` 在 localStorage、时钟/marker 在 IndexedDB，只写对其中一个就会出现"新账本配旧身份"。
 
 在第 4 步完成之前，正确的说法是 **BACKEND_READY / LIMITS_PROVISIONAL**：恢复能力在后端可用并已验证，且体积限额仍是临时安全上限（未在真机做过 80% / 100% 边界验证）。用户尚不能完成一次真实恢复。
 
-**激活协议的最终形态以计划 §3.10 为准**：其中「验空」已前移到写 `pendingRestoreDeviceId` **之前**，且 `COMMITTED` 由 **durable commit marker** 判定而非"某 store 非空"。上面那句六步概述保留为线索，细节不得据它实现。
+**激活协议的最终形态以计划 §3.10 为准**：锁外 pending 只能作 hint，所有授权身份的状态都必须在 shared/exclusive 锁内重读；「验空」已前移到写 `pendingRestoreDeviceId` **之前**，且 `COMMITTED` 只由**结构合法且 `marker.newDeviceId === pendingRestoreDeviceId` 的 durable marker**判定。UI Gate 必须覆盖两个换锁竞态，并分别覆盖 events-only、contexts-only、clock-only，证明每种非空情形都在 pending 写入前拒绝；storage 的三种单-store 事务测试不能替代它。
 
 ### 7.2 关于"零写入风险"的措辞更正（2026-08-07）
 
@@ -191,6 +193,7 @@ round-trip 与摘要比较**可以作为辅助断言**，但不得作为唯一 o
 | v1.3 | 收口 | L3 改为全部只读（`global-hlc` 与历史 `device-sequence` 水位只读检查、新身份不得已有记录、首次 reserve 只在克隆库上验证、clock 清空产生专属 `L3_CLOCK`）；新增 §7.1 冻结 BACKEND_READY 交付口径与六步激活协议 | Fable 5（据 Codex 复审） | 2026-08-07 |
 | v1.4 | 收口 | 负样本矩阵补第 11 条（CRC 完整性，依赖路线冻结），伪造 `originalSize` 降为解包器单测；状态改为「计划待审；批准后开工」 | Fable 5（据 Codex 复审） | 2026-08-07 |
 | v1.5 | 收口 | must-not-fail 补第 3 条（真实 undo 正例），切片顺序第 3 步 Gate 同步为 **11 条负样本 + 3 条 must-not-fail**；交付口径统一为 **BACKEND_READY / LIMITS_PROVISIONAL**；CRC 路线冻结为 B-reader-only（读侧 `@zip.js/zip.js`），第 11 条不再"依赖路线冻结"而改为依赖计划的 T0 硬 Gate；修正 v1.3/v1.4 在本表中的顺序 | Fable 5（据 Codex 复审） | 2026-08-07 |
+| v1.6 | 收口 | CRC 状态改为已冻结；T0 独占且 G5 拆为 T3a browser 与最终 iPhone G5b；身份生成权回到 UI/调用方；marker 必须封闭校验并绑定 pending；UI 增加三种单-store pre-pending Gate；manifest 共用 shape validator；watermark 保留 prototype-name deviceId；同步 L3、真机 runbook、切片顺序与“计划已完成修订，待用户批准 T0”的当前状态 | Codex | 2026-08-07 |
 
 ### 9.1 v1.2 推翻了哪些旧判断，以及为什么
 
