@@ -50,6 +50,11 @@ interface RoundTripHarness {
   readonly plan: LedgerRestorePlan;
 }
 
+interface RawStoreDump {
+  readonly keys: readonly IDBValidKey[];
+  readonly values: readonly unknown[];
+}
+
 const databaseNames = new Set<string>();
 const repositories = new Set<TestRepository>();
 let databaseCounter = 0;
@@ -181,24 +186,35 @@ async function toExportContext(context: ContextRecord): Promise<ExportContext> {
   };
 }
 
-async function restoreRoundTrip(
-  label: string,
-  source: SourceHarness,
-): Promise<RoundTripHarness> {
+async function exportSourcePackage(source: SourceHarness): Promise<Uint8Array> {
   const snapshot = await source.repository.readSnapshot();
   const contexts = await Promise.all(snapshot.contexts.map(toExportContext));
-  const packageBytes = exportLedgerPackage({
+  return exportLedgerPackage({
     events: snapshot.events,
     contexts,
     mode: "full-backup",
     exportedByDeviceId: SOURCE_DEVICE_ID,
     exportedAt: EXPORTED_AT,
   });
+}
 
+async function restoreRoundTrip(
+  label: string,
+  source: SourceHarness,
+): Promise<RoundTripHarness> {
+  const packageBytes = await exportSourcePackage(source);
   // Exchange tests deliberately use a fake digest. This apps/web bridge is the
   // one place that wires the production package reader and real WebCrypto SHA-256
   // to the independent exchange and storage packages.
   const read = await readPackage(packageBytes);
+  return restoreReadPackage(label, source, read);
+}
+
+async function restoreReadPackage(
+  label: string,
+  source: SourceHarness,
+  read: Awaited<ReturnType<typeof readPackage>>,
+): Promise<RoundTripHarness> {
   const plan = await buildLedgerRestorePlan(read, sha256Hex);
 
   // A compile-time bridge, not a runtime assertion: neither package may import
@@ -219,6 +235,53 @@ async function restoreRoundTrip(
     restored,
     plan,
   };
+}
+
+async function restorePackageInto(
+  packageBytes: Uint8Array,
+  target: TestRepository,
+  newDeviceId: string,
+): Promise<void> {
+  const read = await readPackage(packageBytes);
+  const plan: RestoreLedgerInput = await buildLedgerRestorePlan(read, sha256Hex);
+  await target.restoreLedger(plan, newDeviceId);
+}
+
+function shuffledTopLevelEventKeys(line: string): string {
+  const event = JSON.parse(line) as Record<string, unknown>;
+  return JSON.stringify(Object.fromEntries(Object.entries(event).reverse()));
+}
+
+async function dumpLedgerStores(
+  databaseName: string,
+): Promise<Readonly<Record<"events" | "contexts" | "clock", RawStoreDump>>> {
+  const database = await requestResult(indexedDB.open(databaseName));
+  try {
+    const transaction = database.transaction(
+      ["events", "contexts", "clock"],
+      "readonly",
+    );
+    const done = transactionDone(transaction);
+    const readStore = async (
+      storeName: "events" | "contexts" | "clock",
+    ): Promise<RawStoreDump> => {
+      const store = transaction.objectStore(storeName);
+      const [keys, values] = await Promise.all([
+        requestResult(store.getAllKeys()),
+        requestResult(store.getAll()),
+      ]);
+      return { keys, values };
+    };
+    const [events, contexts, clock] = await Promise.all([
+      readStore("events"),
+      readStore("contexts"),
+      readStore("clock"),
+    ]);
+    await done;
+    return { events, contexts, clock };
+  } finally {
+    database.close();
+  }
 }
 
 const realReviewQueueProbe: ReviewQueueProbe = (view, snapshot, budget) =>
@@ -404,5 +467,67 @@ describe("A1 ledger backup restore integration", () => {
     expect(malformed.failures.map(({ code }) => code)).toEqual([
       "L3_RESTORE_COMMIT",
     ]);
+  });
+
+  it("T12 #5 rejects a truncated package before changing any byte of an existing ledger", async () => {
+    const source = await createSourceHarness("truncated-source");
+    await appendLookupCapture(source, { withImage: true });
+    const target = await createSourceHarness("truncated-target");
+    await appendLookupCapture(target);
+    const before = await dumpLedgerStores(target.databaseName);
+    const packageBytes = await exportSourcePackage(source);
+    const truncated = packageBytes.slice(0, -1);
+    const restoreSpy = vi.spyOn(target.repository, "restoreLedger");
+
+    await expect(
+      restorePackageInto(truncated, target.repository, "device-truncated"),
+    ).rejects.toThrow();
+
+    expect(restoreSpy).not.toHaveBeenCalled();
+    expect(await dumpLedgerStores(target.databaseName)).toEqual(before);
+  });
+
+  it("T12 must-not-fail #1 restores reversed event lines and verifies every layer equivalent", async () => {
+    const source = await createSourceHarness("reversed-lines");
+    await appendLookupCapture(source, { withImage: true });
+    const read = await readPackage(await exportSourcePackage(source));
+    const reversed = {
+      ...read,
+      eventsJsonl: `${read.eventsJsonl
+        .trimEnd()
+        .split("\n")
+        .reverse()
+        .join("\n")}\n`,
+    };
+    const harness = await restoreReadPackage("reversed-lines", source, reversed);
+    const probe = vi.fn(realReviewQueueProbe);
+
+    expect(await verifyRoundTrip(harness, probe)).toEqual({
+      ok: true,
+      failures: [],
+    });
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it("T12 must-not-fail #2 restores shuffled event key order and verifies every layer equivalent", async () => {
+    const source = await createSourceHarness("shuffled-keys");
+    await appendLookupCapture(source, { withImage: true });
+    const read = await readPackage(await exportSourcePackage(source));
+    const shuffled = {
+      ...read,
+      eventsJsonl: `${read.eventsJsonl
+        .trimEnd()
+        .split("\n")
+        .map(shuffledTopLevelEventKeys)
+        .join("\n")}\n`,
+    };
+    const harness = await restoreReadPackage("shuffled-keys", source, shuffled);
+    const probe = vi.fn(realReviewQueueProbe);
+
+    expect(await verifyRoundTrip(harness, probe)).toEqual({
+      ok: true,
+      failures: [],
+    });
+    expect(probe).toHaveBeenCalledTimes(2);
   });
 });

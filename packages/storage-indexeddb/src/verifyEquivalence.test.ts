@@ -32,6 +32,7 @@ const databases = new Set<string>();
 const repositories = new Set<LedgerRepository>();
 const PACKAGE_MAX_HLC: HybridLogicalClock = { wallTime: 100, counter: 3 };
 const IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+const FIXTURE_ORIGINAL = "大丈夫、手は打ったから。";
 
 afterEach(async () => {
   for (const repository of repositories) repository.close();
@@ -56,7 +57,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 }
 
 async function fixtureContext(): Promise<ContextRecord> {
-  const original = "大丈夫、手は打ったから。";
+  const original = FIXTURE_ORIGINAL;
   const answer = "没关系，已经采取措施了。";
   const imageSha256 = await sha256Hex(IMAGE_BYTES);
   const digest = await sha256Hex(
@@ -104,9 +105,10 @@ function fixtureEvents(contextHash: string): readonly Event[] {
       kind: "item_created",
       captureId: "capture-1",
       itemId: "item-1",
+      refs: ["device-source:1"],
       payload: {
-        display: "手を打つ",
-        identityKey: "text:手を打つ",
+        display: FIXTURE_ORIGINAL,
+        identityKey: FIXTURE_ORIGINAL,
         targetChannels: ["R"],
       },
     },
@@ -115,6 +117,7 @@ function fixtureEvents(contextHash: string): readonly Event[] {
       kind: "lookup_observed",
       captureId: "capture-1",
       itemId: "item-1",
+      refs: ["device-source:1"],
       payload: { channel: "R", result: "lookup" },
     },
   ];
@@ -585,5 +588,55 @@ describe("verifyLedgerEquivalence", () => {
     });
     databases.delete(cloneName);
     expect(deletionWasBlocked).toBe(false);
+  });
+
+  it("T12 #2 reports only L1_EVENTS_MISMATCH when restored recordedAt moves by one millisecond", async () => {
+    const harness = await createHarness("t12-recorded-at");
+    const event = harness.input.events[0]!;
+    await putRecord(harness.restoredName, "events", {
+      ...event,
+      recordedAt: "2026-08-11T00:00:00.001Z",
+    });
+
+    const report = await verifyLedgerEquivalence({
+      ...harness.verifyInput,
+      reviewQueueProbe: queueProjection,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.failures.map(({ code }) => code)).toEqual([
+      "L1_EVENTS_MISMATCH",
+    ]);
+  });
+
+  it("T12 #8 classifies an emptied restored clock store only as clock and commit failures", async () => {
+    const harness = await createHarness("t12-empty-clock");
+    await clearStore(harness.restoredName, "clock");
+
+    const report = await verifyLedgerEquivalence({
+      ...harness.verifyInput,
+      reviewQueueProbe: queueProjection,
+    });
+    const failureCodes = new Set(report.failures.map(({ code }) => code));
+
+    expect(report.ok).toBe(false);
+    expect(failureCodes).toEqual(new Set(["L3_CLOCK", "L3_RESTORE_COMMIT"]));
+  });
+
+  it("T12 #10 reports only L3_CLOCK when global-hlc is below the package maximum", async () => {
+    const harness = await createHarness("t12-low-global-hlc");
+    await putRecord(harness.restoredName, "clock", {
+      key: "global-hlc",
+      type: "global-hlc",
+      hlc: { wallTime: PACKAGE_MAX_HLC.wallTime - 1, counter: 0 },
+    });
+
+    const report = await verifyLedgerEquivalence({
+      ...harness.verifyInput,
+      reviewQueueProbe: queueProjection,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.failures.map(({ code }) => code)).toEqual(["L3_CLOCK"]);
   });
 });
