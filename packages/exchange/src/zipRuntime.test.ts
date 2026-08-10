@@ -476,6 +476,135 @@ describe("T0 G3 - compressed, declared, and actual-output limits", () => {
     expect(attemptedAfterCrossing).toBe(false);
   });
 
+  it("uses worker-reported outputSize when the worker rejects before the writer", async () => {
+    const seen = observation();
+    const workerFactory: ZipReaderFactory = () => ({
+      async *getEntriesGenerator() {
+        yield {
+          filename: "events.jsonl",
+          directory: false,
+          encrypted: false,
+          compressionMethod: 8,
+          diskNumberStart: 0,
+          zip64: false,
+          compressedSize: 1,
+          uncompressedSize: 32,
+          async getData() {
+            throw Object.assign(new Error("Invalid uncompressed size"), {
+              outputSize: 33,
+            });
+          },
+        } satisfies RuntimeZipEntry;
+        return true;
+      },
+      close: () => Promise.resolve(),
+    });
+
+    const error = await expectCode(
+      () =>
+        readZipEntriesWithRuntime(
+          new Uint8Array([1]),
+          SMALL_LIMITS,
+          workerFactory,
+          seen,
+        ),
+      "PACKAGE_OUTPUT_LIMIT",
+    );
+    expect((error.cause as { outputSize?: unknown }).outputSize).toBe(33);
+    expect(seen.signals[0]?.aborted).toBe(true);
+  });
+
+  it("does not mis-map a worker size error that stays inside project limits", async () => {
+    const seen = observation();
+    const vendorError = Object.assign(new Error("Invalid uncompressed size"), {
+      outputSize: 31,
+    });
+    const workerFactory: ZipReaderFactory = () => ({
+      async *getEntriesGenerator() {
+        yield {
+          filename: "events.jsonl",
+          directory: false,
+          encrypted: false,
+          compressionMethod: 8,
+          diskNumberStart: 0,
+          zip64: false,
+          compressedSize: 1,
+          uncompressedSize: 32,
+          getData: () => Promise.reject(vendorError),
+        } satisfies RuntimeZipEntry;
+        return true;
+      },
+      close: () => Promise.resolve(),
+    });
+
+    await expect(
+      readZipEntriesWithRuntime(
+        new Uint8Array([1]),
+        SMALL_LIMITS,
+        workerFactory,
+        seen,
+      ),
+    ).rejects.toBe(vendorError);
+    expect(seen.signals[0]?.aborted).toBe(false);
+  });
+
+  it("combines prior accepted bytes with worker outputSize for the package cap", async () => {
+    const seen = observation();
+    const workerFactory: ZipReaderFactory = () => ({
+      async *getEntriesGenerator() {
+        yield {
+          filename: "manifest.json",
+          directory: false,
+          encrypted: false,
+          compressionMethod: 8,
+          diskNumberStart: 0,
+          zip64: false,
+          compressedSize: 1,
+          uncompressedSize: 20,
+          async getData(writer) {
+            const target = writer as {
+              init(): Promise<void>;
+              writeUint8Array(bytes: Uint8Array): Promise<void>;
+              getData(): Promise<Uint8Array>;
+            };
+            await target.init();
+            await target.writeUint8Array(new Uint8Array(20));
+            return target.getData();
+          },
+        } satisfies RuntimeZipEntry;
+        yield {
+          filename: "events.jsonl",
+          directory: false,
+          encrypted: false,
+          compressionMethod: 8,
+          diskNumberStart: 0,
+          zip64: false,
+          compressedSize: 1,
+          uncompressedSize: 20,
+          async getData() {
+            throw Object.assign(new Error("Invalid uncompressed size"), {
+              outputSize: 21,
+            });
+          },
+        } satisfies RuntimeZipEntry;
+        return true;
+      },
+      close: () => Promise.resolve(),
+    });
+
+    await expectCode(
+      () =>
+        readZipEntriesWithRuntime(
+          new Uint8Array([1]),
+          { ...SMALL_LIMITS, totalOutputBytes: 40 },
+          workerFactory,
+          seen,
+        ),
+      "PACKAGE_OUTPUT_LIMIT",
+    );
+    expect(seen.signals[1]?.aborted).toBe(true);
+  });
+
   it("uses actual chunks, aborts, closes, and preserves limit priority", async () => {
     const entryLocal = inflateLocalEntries(ZIP_PROBE_FIXTURES.actualEntryOverflow);
     expect(entryLocal).toMatchObject([

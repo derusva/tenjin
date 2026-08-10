@@ -208,6 +208,16 @@ function mapEntryError(error: unknown): unknown {
     : error;
 }
 
+function outputSizeOf(error: unknown): number | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const outputSize = Reflect.get(error, "outputSize");
+  return typeof outputSize === "number" &&
+    Number.isSafeInteger(outputSize) &&
+    outputSize >= 0
+    ? outputSize
+    : undefined;
+}
+
 function validateEntry(entry: RuntimeZipEntry): void {
   if (entry.encrypted) {
     throw new ZipRuntimeError("ZIP_ENCRYPTED_UNSUPPORTED");
@@ -269,6 +279,10 @@ class CountingWriter extends Writer<Uint8Array> {
 
   override getData(): Promise<Uint8Array> {
     return Promise.resolve(concatChunks(this.chunks));
+  }
+
+  get acceptedBytes(): number {
+    return this.entryBytes;
   }
 }
 
@@ -353,6 +367,17 @@ export async function readZipEntriesWithRuntime(
         });
         output.set(entry.filename, data as Uint8Array);
       } catch (error) {
+        const vendorOutputSize = outputSizeOf(error);
+        const totalBeforeEntry = total.value - writer.acceptedBytes;
+        if (
+          !total.limitExceeded &&
+          vendorOutputSize !== undefined &&
+          (vendorOutputSize > outputLimit ||
+            totalBeforeEntry + vendorOutputSize > limits.totalOutputBytes)
+        ) {
+          total.limitExceeded = true;
+          controller.abort(new ZipRuntimeError("PACKAGE_OUTPUT_LIMIT"));
+        }
         if (total.limitExceeded) {
           throw new ZipRuntimeError("PACKAGE_OUTPUT_LIMIT", error);
         }

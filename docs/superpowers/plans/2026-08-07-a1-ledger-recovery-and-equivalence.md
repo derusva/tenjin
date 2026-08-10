@@ -166,6 +166,8 @@ adapter 必须把 `ZIP_READER_OPTIONS` **逐次显式传给 `new ZipReader(...)`
 2. **`PACKAGE_DECLARED_LIMIT`**：通过 `getEntriesGenerator()` 单遍枚举 metadata，在逐条 yield 时累计 entry 数、单 entry `uncompressedSize` 与声明总量；超限时所有 entry 的 `getData` 调用次数必须为 0。这只是便宜早拒，不能替代安全计量；
 3. **`PACKAGE_OUTPUT_LIMIT`**：真实 vendor fixture 至少分两条，且每个 entry 的 local/central `uncompressedSize` 两处始终一致、CRC 始终按实际 payload 正确填写：① 单 entry 的声明值恰好等于其类型 cap，实际 deflate 输出为 `cap + 1`；② 多 entry 各自声明值都不超过单条 cap、声明总和恰好等于 package total cap，但最后一条的实际输出多 1 byte，使**累计实际输出**越过 total cap。counting writer 在 crossing chunk 到达时先置 sticky `limitExceeded`、abort 且不保留该 chunk，断言 `signal.aborted === true`、reader 在 `finally` 关闭、未消费后续 chunk。zip.js 2.8.34 自己也会拿声明的 `uncompressedSize` 校验实际输出并可能抛 `ERR_INVALID_UNCOMPRESSED_SIZE`（核对精确版本包内 `lib/core/zip-reader.js` 与 `lib/core/streams/codec-stream.js`）；因此 adapter 的 catch/finally 在 `limitExceeded === true` 时必须优先重抛稳定的 `PACKAGE_OUTPUT_LIMIT`，不得被 vendor size error、`AbortError` 或 close error 覆盖。若 flag 未置位，则不得把 vendor 错误误映射成项目限额错误。
 
+**T3a 实测校准（2026-08-10）：** Node 主线程路径会先把 crossing chunk 交给 counting writer；Edge 的 inline Web Worker 路径则会在该 chunk 到达主线程 writer 之前先抛 vendor size error，但错误对象携带 worker 实际累计的 `outputSize`。因此生产 adapter 同时接受这两个等价的安全信号：writer 已置 `limitExceeded`，或 vendor `outputSize` 证明单条/累计实际产出已越过项目 cap。后一条必须立即置同一个 sticky flag、abort，并稳定映射为 `PACKAGE_OUTPUT_LIMIT`；`outputSize` 未越界时必须保留 vendor 原错误。Node 定向测试同时覆盖“越界映射 / 未越界不误映射 / 累计总量”，T3a 首次离线浏览器 Gate 覆盖真实 Worker 分支。
+
 T0/T3 可以通过 package-internal helper 注入较小的测试 cap，生产公开 `readPackage` 必须硬接 `PACKAGE_LIMITS`；但这条 Gate 必须走真实 zip.js `entry.getData` 与真实压缩 fixture。只用 fake writer/double 证明计数逻辑不构成 vendor 集成证据。
 
 严格读取器的配置与拒绝清单见 §T0，它们是硬 Gate 的验收项。
