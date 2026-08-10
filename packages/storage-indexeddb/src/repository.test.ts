@@ -11,9 +11,17 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   openLedgerRepository,
+  structurallyEqual,
   type ContextRecord,
   type LedgerRepository,
 } from "./repository.js";
+import * as publicApi from "./index.js";
+
+function packageRootMustNotExposeStructurallyEqual() {
+  // @ts-expect-error structurallyEqual is intentionally package-internal.
+  return publicApi.structurallyEqual;
+}
+void packageRootMustNotExposeStructurallyEqual;
 
 const openDatabaseNames = new Set<string>();
 const openRepositories = new Set<LedgerRepository>();
@@ -115,6 +123,55 @@ afterEach(async () => {
   openRepositories.clear();
   await Promise.all([...openDatabaseNames].map((dbName) => deleteDB(dbName)));
   openDatabaseNames.clear();
+});
+
+describe("structurallyEqual package-internal comparator", () => {
+  it("compares independent Blobs byte for byte", async () => {
+    const left = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const equal = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
+    const different = new Blob([new Uint8Array([1, 2, 4])], {
+      type: "image/png",
+    });
+
+    await expect(structurallyEqual(left, equal)).resolves.toBe(true);
+    await expect(structurallyEqual(left, different)).resolves.toBe(false);
+  });
+
+  it("treats equal Blob bytes with different media types as different", async () => {
+    const bytes = new Uint8Array([4, 5, 6]);
+    const png = new Blob([bytes], { type: "image/png" });
+    const jpeg = new Blob([bytes], { type: "image/jpeg" });
+
+    await expect(structurallyEqual(png, jpeg)).resolves.toBe(false);
+  });
+
+  it("recurses through nested records independent of key insertion order", async () => {
+    const left = {
+      label: "context",
+      nested: {
+        values: [1, { image: new Blob([new Uint8Array([7, 8])], { type: "image/png" }) }],
+        active: true,
+      },
+    };
+    const equal = {
+      nested: {
+        active: true,
+        values: [1, { image: new Blob([new Uint8Array([7, 8])], { type: "image/png" }) }],
+      },
+      label: "context",
+    };
+    const changed = {
+      ...equal,
+      nested: { ...equal.nested, active: false },
+    };
+
+    await expect(structurallyEqual(left, equal)).resolves.toBe(true);
+    await expect(structurallyEqual(left, changed)).resolves.toBe(false);
+  });
+
+  it("does not expose the comparator from the package root", () => {
+    expect(Object.hasOwn(publicApi, "structurallyEqual")).toBe(false);
+  });
 });
 
 describe("openLedgerRepository", () => {

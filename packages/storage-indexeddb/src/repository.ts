@@ -653,7 +653,15 @@ async function structurallyEqualValue(
   );
 }
 
-function structurallyEqual(left: unknown, right: unknown): Promise<boolean> {
+/**
+ * Package-internal support for ledger restore equivalence checks.
+ * This is not a general-purpose comparator and is intentionally absent from
+ * the package root public API.
+ */
+export function structurallyEqual(
+  left: unknown,
+  right: unknown,
+): Promise<boolean> {
   return structurallyEqualValue(
     left,
     right,
