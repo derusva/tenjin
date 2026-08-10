@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@tenjin/core": "workspace:*",
+    "@zip.js/zip.js": "2.8.34",
     "fflate": "^0.8.2"
   }
 }
