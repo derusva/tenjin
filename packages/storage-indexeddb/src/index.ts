@@ -21,6 +21,8 @@ export type {
   LedgerRestorer,
   RestoreContextInput,
   RestoreLedgerInput,
+  RestoreStorageState,
+  RestoreStorageStateInspector,
 } from "./restore.js";
 export {
   assertRestoreCommitRecord,

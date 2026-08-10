@@ -20,6 +20,7 @@ import {
   type OpenedLedgerRepository,
 } from "./repository.js";
 import type { CoachImportReceipt } from "./importReceipt.js";
+import { RestoreCommitRecordError } from "./restoreCommit.js";
 import * as publicApi from "./index.js";
 
 function packageRootMustNotExposeStructurallyEqual() {
@@ -226,6 +227,21 @@ async function allStoreCounts(name: string): Promise<readonly number[]> {
     );
     await transaction.done;
     return counts;
+  } finally {
+    database.close();
+  }
+}
+
+async function seedRestoreProbeStore(
+  name: string,
+  store: "events" | "contexts" | "clock" | "importReceipts",
+  value: unknown,
+): Promise<void> {
+  const database = await openDB(name);
+  try {
+    const transaction = database.transaction(store, "readwrite");
+    await transaction.objectStore(store).put(value as never);
+    await transaction.done;
   } finally {
     database.close();
   }
@@ -1256,6 +1272,131 @@ describe("openLedgerRepository", () => {
       events: [],
       contexts: [],
     });
+  });
+});
+
+describe("inspectRestoreStorageState", () => {
+  it.each([
+    {
+      store: "events" as const,
+      value: { eventId: "restore-probe-event" },
+      expected: { events: 1, contexts: 0, clock: 0, importReceipts: 0 },
+    },
+    {
+      store: "contexts" as const,
+      value: { hash: "restore-probe-context" },
+      expected: { events: 0, contexts: 1, clock: 0, importReceipts: 0 },
+    },
+    {
+      store: "clock" as const,
+      value: { key: "global-hlc", type: "global-hlc" },
+      expected: { events: 0, contexts: 0, clock: 1, importReceipts: 0 },
+    },
+    {
+      store: "importReceipts" as const,
+      value: { digest: "restore-probe-receipt" },
+      expected: { events: 0, contexts: 0, clock: 0, importReceipts: 1 },
+    },
+  ])("reports a non-empty $store store without mutating it", async ({
+    store,
+    value,
+    expected,
+  }) => {
+    const dbName = createDatabaseName(`restore-probe-${store}`);
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    await seedRestoreProbeStore(dbName, store, value);
+
+    await expect(repository.inspectRestoreStorageState()).resolves.toEqual({
+      ...expected,
+      restoreCommit: undefined,
+    });
+    expect(await allStoreCounts(dbName)).toEqual([
+      expected.events,
+      expected.contexts,
+      expected.clock,
+      expected.importReceipts,
+    ]);
+  });
+
+  it("returns a validated restore commit marker", async () => {
+    const dbName = createDatabaseName("restore-probe-marker");
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    const marker = {
+      key: "restore-commit",
+      type: "restore-commit",
+      newDeviceId: "device-restored",
+      committedAt: "2026-08-11T00:00:00.000Z",
+    } as const;
+    await seedRestoreProbeStore(dbName, "clock", marker);
+
+    await expect(repository.inspectRestoreStorageState()).resolves.toEqual({
+      events: 0,
+      contexts: 0,
+      clock: 1,
+      importReceipts: 0,
+      restoreCommit: marker,
+    });
+  });
+
+  it("rejects a malformed restore commit marker with its dedicated error", async () => {
+    const dbName = createDatabaseName("restore-probe-malformed-marker");
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    await seedRestoreProbeStore(dbName, "clock", {
+      key: "restore-commit",
+      type: "restore-commit",
+      newDeviceId: " device-restored ",
+      committedAt: "2026-08-11T00:00:00.000Z",
+    });
+
+    await expect(repository.inspectRestoreStorageState()).rejects.toThrow(
+      RestoreCommitRecordError,
+    );
+  });
+
+  it("reads every restore store through one readonly transaction", async () => {
+    const repository = await openTestRepository("restore-probe-single-tx");
+    const nativeTransaction = IDBDatabase.prototype.transaction;
+    const observedTransactions: Array<{
+      readonly stores: string[];
+      readonly mode: IDBTransactionMode | undefined;
+    }> = [];
+    IDBDatabase.prototype.transaction = function (
+      this: IDBDatabase,
+      storeNames: string | string[],
+      mode?: IDBTransactionMode,
+      options?: IDBTransactionOptions,
+    ): IDBTransaction {
+      observedTransactions.push({
+        stores: (typeof storeNames === "string" ? [storeNames] : [...storeNames])
+          .sort(),
+        mode,
+      });
+      return Reflect.apply(
+        nativeTransaction,
+        this,
+        options === undefined
+          ? mode === undefined
+            ? [storeNames]
+            : [storeNames, mode]
+          : [storeNames, mode, options],
+      ) as IDBTransaction;
+    };
+
+    try {
+      await repository.inspectRestoreStorageState();
+    } finally {
+      IDBDatabase.prototype.transaction = nativeTransaction;
+    }
+
+    expect(observedTransactions).toEqual([
+      {
+        stores: ["clock", "contexts", "events", "importReceipts"],
+        mode: "readonly",
+      },
+    ]);
   });
 });
 

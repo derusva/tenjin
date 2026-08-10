@@ -47,6 +47,25 @@ export interface LedgerRestorer {
   readRestoreCommit(): Promise<RestoreCommitRecord | undefined>;
 }
 
+/**
+ * A coherent, read-only view of the stores a restore transaction owns.
+ *
+ * The counts intentionally include clock metadata and import receipts: callers
+ * use this to decide whether a target is empty before they attempt a restore.
+ */
+export interface RestoreStorageState {
+  readonly events: number;
+  readonly contexts: number;
+  readonly clock: number;
+  readonly importReceipts: number;
+  readonly restoreCommit: RestoreCommitRecord | undefined;
+}
+
+/** Optional capability for inspecting restore preconditions without mutation. */
+export interface RestoreStorageStateInspector {
+  inspectRestoreStorageState(): Promise<RestoreStorageState>;
+}
+
 export interface PreparedRestoreLedger {
   readonly events: readonly Event[];
   readonly contexts: readonly ContextRecord[];

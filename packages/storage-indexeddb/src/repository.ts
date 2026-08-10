@@ -22,6 +22,8 @@ import {
   prepareRestoreLedger,
   type LedgerRestorer,
   type RestoreLedgerInput,
+  type RestoreStorageState,
+  type RestoreStorageStateInspector,
 } from "./restore.js";
 import {
   assertCoachImportDigest,
@@ -118,6 +120,7 @@ export interface LedgerBackupReader {
 
 export type OpenedLedgerRepository = LedgerRepository &
   LedgerRestorer &
+  RestoreStorageStateInspector &
   CoachImportRepository &
   LedgerBackupReader;
 
@@ -1426,6 +1429,34 @@ class IndexedDBLedgerRepository
     if (marker === undefined) return undefined;
     assertRestoreCommitRecord(marker);
     return marker;
+  }
+
+  async inspectRestoreStorageState(): Promise<RestoreStorageState> {
+    const transaction = this.#database.transaction(
+      ["events", "contexts", "clock", "importReceipts"],
+      "readonly",
+    );
+    const clockStore = transaction.objectStore("clock");
+    const [events, contexts, clock, importReceipts, marker] = await Promise.all([
+      transaction.objectStore("events").count(),
+      transaction.objectStore("contexts").count(),
+      clockStore.count(),
+      transaction.objectStore("importReceipts").count(),
+      clockStore.get(RESTORE_COMMIT_KEY),
+    ]);
+    await transaction.done;
+
+    if (marker !== undefined) {
+      assertRestoreCommitRecord(marker);
+    }
+
+    return {
+      events,
+      contexts,
+      clock,
+      importReceipts,
+      restoreCommit: marker,
+    };
   }
 
   async readSnapshot(): Promise<LedgerSnapshot> {
