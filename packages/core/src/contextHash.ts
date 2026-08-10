@@ -11,6 +11,7 @@
  */
 export interface ContextHashInput {
   readonly original: string;
+  readonly focus?: string;
   readonly corrected?: string;
   readonly answer?: string;
   readonly imageSha256?: string;
@@ -19,6 +20,7 @@ export interface ContextHashInput {
 export function serializeContextHashInput(input: ContextHashInput): string {
   return JSON.stringify({
     original: input.original,
+    ...(input.focus === undefined ? {} : { focus: input.focus }),
     ...(input.corrected === undefined ? {} : { corrected: input.corrected }),
     ...(input.answer === undefined ? {} : { answer: input.answer }),
     ...(input.imageSha256 === undefined

@@ -125,6 +125,13 @@ export function createLedgerRuntime(
       ) {
         throw new TypeError("original must be a non-empty string");
       }
+      if (
+        command.type === "lookup" &&
+        Object.hasOwn(command, "focus") &&
+        (typeof command.focus !== "string" || command.focus.trim().length === 0)
+      ) {
+        throw new TypeError("focus must be a non-empty string when provided");
+      }
       const eventCount =
         command.type === "production_correction" &&
         !command.corrected?.trim()

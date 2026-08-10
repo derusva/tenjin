@@ -108,6 +108,7 @@ export function App({
   const [captureDraft, setCaptureDraft] = useState<CaptureDraft>({
     captureType: "lookup",
     original: "",
+    focus: "",
     corrected: "",
     answer: "",
     image: undefined,

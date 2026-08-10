@@ -45,6 +45,7 @@ export interface ContextImageRecord {
 export interface ContextRecord {
   readonly hash: string;
   readonly original: string;
+  readonly focus?: string;
   readonly corrected?: string;
   readonly answer?: string;
   readonly image?: ContextImageRecord;
@@ -122,6 +123,22 @@ const CONTEXT_IMAGE_MEDIA_TYPE_SET = new Set<string>(
   CONTEXT_IMAGE_MEDIA_TYPES,
 );
 const SHA256_HEXADECIMAL = /^[a-f0-9]{64}$/;
+const CONTEXT_FIELD_SET = new Set([
+  "hash",
+  "original",
+  "focus",
+  "corrected",
+  "answer",
+  "image",
+  "createdAt",
+]);
+const CONTEXT_IMAGE_FIELD_SET = new Set([
+  "blob",
+  "mediaType",
+  "name",
+  "byteLength",
+  "sha256",
+]);
 
 function deviceSequenceKey(deviceId: string): string {
   return `device-sequence:${deviceId}`;
@@ -163,11 +180,25 @@ function assertValidEvent(event: Event): void {
 }
 
 function assertValidContext(context: ContextRecord): void {
+  if (typeof context !== "object" || context === null) {
+    throw new TypeError("Context must be an object");
+  }
+  const unknownContextFields = Object.keys(context).filter(
+    (field) => !CONTEXT_FIELD_SET.has(field),
+  );
+  if (unknownContextFields.length > 0) {
+    throw new TypeError(
+      `Context carries unknown field(s): ${unknownContextFields.sort().join(", ")}`,
+    );
+  }
   if (!isNonEmptyString(context.hash)) {
     throw new TypeError("Context hash must be a non-empty string");
   }
   if (!isNonEmptyString(context.original)) {
     throw new TypeError("Context original must be a non-empty string");
+  }
+  if (Object.hasOwn(context, "focus") && !isNonEmptyString(context.focus)) {
+    throw new TypeError("Context focus must be a non-empty string");
   }
   if (
     Object.hasOwn(context, "corrected") &&
@@ -182,6 +213,14 @@ function assertValidContext(context: ContextRecord): void {
     const image = context.image;
     if (typeof image !== "object" || image === null) {
       throw new TypeError("Context image must be an object");
+    }
+    const unknownImageFields = Object.keys(image).filter(
+      (field) => !CONTEXT_IMAGE_FIELD_SET.has(field),
+    );
+    if (unknownImageFields.length > 0) {
+      throw new TypeError(
+        `Context image carries unknown field(s): ${unknownImageFields.sort().join(", ")}`,
+      );
     }
     if (!isBlob(image.blob)) {
       throw new TypeError("Context image blob must be a Blob");
@@ -257,6 +296,7 @@ function contextsHaveSameIdentity(
   return (
     left.hash === right.hash &&
     left.original === right.original &&
+    left.focus === right.focus &&
     left.corrected === right.corrected &&
     left.answer === right.answer &&
     sameImage

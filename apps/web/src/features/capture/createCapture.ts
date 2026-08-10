@@ -18,6 +18,7 @@ export type CaptureCommand =
   | {
       readonly type: "lookup";
       readonly original: string;
+      readonly focus?: string;
       readonly answer?: string;
       readonly image?: ContextImageRecord;
       readonly captureDurationMs?: number;
@@ -95,6 +96,13 @@ export async function createCapture(
   if (dependencies.deviceId.trim().length === 0) {
     throw new TypeError("deviceId must be a non-empty string");
   }
+  if (
+    command.type === "lookup" &&
+    Object.hasOwn(command, "focus") &&
+    (typeof command.focus !== "string" || command.focus.trim().length === 0)
+  ) {
+    throw new TypeError("focus must be a non-empty string when provided");
+  }
 
   const image = command.image;
   const userOriginal = command.original.trim();
@@ -113,9 +121,12 @@ export async function createCapture(
     command.type === "lookup"
       ? command.answer?.trim() || undefined
       : undefined;
+  const focus =
+    command.type === "lookup" ? command.focus?.trim() : undefined;
   const timestamp = dependencies.now().toISOString();
   const contextHashInput: CaptureContextHashInput = {
     original,
+    ...(focus === undefined ? {} : { focus }),
     ...(corrected === undefined ? {} : { corrected }),
     ...(answer === undefined ? {} : { answer }),
     ...(image === undefined ? {} : { imageSha256: image.sha256 }),
@@ -124,6 +135,7 @@ export async function createCapture(
   const context: ContextRecord = {
     hash: contextHash,
     original,
+    ...(focus === undefined ? {} : { focus }),
     ...(corrected === undefined ? {} : { corrected }),
     ...(answer === undefined ? {} : { answer }),
     ...(image === undefined ? {} : { image }),
@@ -159,7 +171,7 @@ export async function createCapture(
   }
 
   const display =
-    corrected ?? (imageOnly ? IMAGE_ONLY_CAPTURE_ORIGINAL : original);
+    corrected ?? focus ?? (imageOnly ? IMAGE_ONLY_CAPTURE_ORIGINAL : original);
   const itemId = dependencies.nextId("item");
   const targetChannels =
     command.type === "lookup"
@@ -178,7 +190,9 @@ export async function createCapture(
       identityKey:
         imageOnly && command.type === "lookup"
           ? `image:${image.sha256}`
-          : normalizeIdentity(display),
+          : focus === undefined
+            ? normalizeIdentity(display)
+            : `focus:${normalizeIdentity(focus)}`,
       targetChannels,
     },
   } satisfies ItemCreatedEvent;

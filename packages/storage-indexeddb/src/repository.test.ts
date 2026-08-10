@@ -421,6 +421,53 @@ describe("openLedgerRepository", () => {
     });
   });
 
+  it("round-trips an optional focus without replacing the source excerpt", async () => {
+    const repository = await openTestRepository("focus-roundtrip");
+    const focusedContext = {
+      ...context,
+      original: "大丈夫、手は打ったから。",
+      focus: "手を打つ",
+      answer: "采取措施",
+    } as const satisfies ContextRecord;
+
+    await repository.appendCapture([captureCreatedEvent], focusedContext);
+
+    expect(await repository.readSnapshot()).toEqual({
+      events: [captureCreatedEvent],
+      contexts: [focusedContext],
+    });
+  });
+
+  it("rejects a reused context hash when focus identity differs", async () => {
+    const repository = await openTestRepository("focus-identity-conflict");
+    const firstContext = {
+      ...context,
+      focus: "手を打つ",
+    } as const satisfies ContextRecord;
+    const conflictingContext = {
+      ...context,
+      focus: "手は打った",
+      createdAt: "2026-07-11T00:21:00.000Z",
+    } as const satisfies ContextRecord;
+    const secondCapture = {
+      ...captureCreatedEvent,
+      eventId: "event-capture-2",
+      captureId: "capture-2",
+      seq: 2,
+      hlc: { ...captureCreatedEvent.hlc, counter: 1 },
+    } as const satisfies CaptureCreatedEvent;
+
+    await repository.appendCapture([captureCreatedEvent], firstContext);
+    await expect(
+      repository.appendCapture([secondCapture], conflictingContext),
+    ).rejects.toThrow(/context hash/i);
+
+    expect(await repository.readSnapshot()).toEqual({
+      events: [captureCreatedEvent],
+      contexts: [firstContext],
+    });
+  });
+
   it("round-trips an image Blob and removes it with the unreferenced context on undo", async () => {
     const dbName = createDatabaseName("image-roundtrip-undo");
     const repository = await openLedgerRepository({ dbName });
@@ -646,6 +693,11 @@ describe("openLedgerRepository", () => {
       context: { ...context, corrected: "" },
     },
     {
+      name: "an empty focus context",
+      events: [captureCreatedEvent],
+      context: { ...context, focus: " \n " },
+    },
+    {
       name: "a non-canonical context timestamp",
       events: [captureCreatedEvent],
       context: { ...context, createdAt: "2026-07-11T00:20:00Z" },
@@ -692,6 +744,43 @@ describe("openLedgerRepository", () => {
     await expect(
       repository.appendCapture(events, invalidContext),
     ).rejects.toThrow();
+    expect(await repository.readSnapshot()).toEqual({
+      events: [],
+      contexts: [],
+    });
+  });
+
+  it.each([
+    {
+      name: "context",
+      value: {
+        ...context,
+        futureField: "must not be stored",
+      } as unknown as ContextRecord,
+    },
+    {
+      name: "context image",
+      value: {
+        ...context,
+        image: {
+          blob: new Blob(["png"], { type: "image/png" }),
+          mediaType: "image/png",
+          name: "lesson.png",
+          byteLength: 3,
+          sha256: "ab".repeat(32),
+          exifOrientation: 1,
+        },
+      } as unknown as ContextRecord,
+    },
+  ])("rejects an unknown $name field through the closed context validator", async ({
+    name,
+    value,
+  }) => {
+    const repository = await openTestRepository(`unknown-${name}`);
+
+    await expect(
+      repository.appendCapture([captureCreatedEvent], value),
+    ).rejects.toThrow(/unknown field/i);
     expect(await repository.readSnapshot()).toEqual({
       events: [],
       contexts: [],

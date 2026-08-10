@@ -326,7 +326,17 @@ svg {
   font-size: 1.25rem;
 }
 
+.capture-input-focus {
+  height: 72px;
+  min-height: 72px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--primary-radius);
+  background: rgb(243 239 230 / 64%);
+  font-size: 1.25rem;
+}
+
 .capture-correction,
+.capture-focus,
 .capture-answer {
   display: grid;
   gap: 8px;

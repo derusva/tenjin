@@ -470,6 +470,46 @@ describe("App", () => {
     }
   });
 
+  it("keeps an unfinished lookup focus draft across local navigation", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App repository={harness.repository} runtime={harness.runtime} />,
+    );
+
+    try {
+      await screen.findByText("还没有记录");
+      await user.type(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        "大丈夫、手は打ったから。",
+      );
+      await user.type(
+        screen.getByRole("textbox", { name: "要复习的片段（可选）" }),
+        "手を打つ",
+      );
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+
+      await user.click(
+        within(navigation).getByRole("button", { name: "搜索" }),
+      );
+      await screen.findByRole("heading", { name: "搜索" });
+      await user.click(
+        within(navigation).getByRole("button", { name: "记录" }),
+      );
+
+      expect(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+      ).toHaveValue("大丈夫、手は打ったから。");
+      expect(
+        screen.getByRole("textbox", { name: "要复习的片段（可选）" }),
+      ).toHaveValue("手を打つ");
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
   it("keeps a failing capture draft visible by locking navigation while saving", async () => {
     const harness = await createHarness();
     const captureWrite = createDeferred<void>();

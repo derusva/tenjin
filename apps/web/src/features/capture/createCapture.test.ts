@@ -180,6 +180,59 @@ describe("createCapture", () => {
     await expect(expectRepositoryCompatible(repository, transaction)).resolves.toBeUndefined();
   });
 
+  it("keeps the full source excerpt while using focus for lookup display and identity", async () => {
+    const harness = createDependencyHarness();
+
+    const transaction = await createCapture(
+      {
+        type: "lookup",
+        original: "  大丈夫、手は打ったから。  ",
+        focus: "  手を打つ  ",
+        answer: "  采取措施  ",
+      },
+      harness.dependencies,
+    );
+
+    expect(transaction.context).toEqual({
+      hash: "sha256:context-1",
+      original: "大丈夫、手は打ったから。",
+      focus: "手を打つ",
+      answer: "采取措施",
+      createdAt: CAPTURED_AT,
+    } satisfies ContextRecord);
+    expect(transaction.events[1]).toMatchObject({
+      kind: "item_created",
+      payload: {
+        display: "手を打つ",
+        identityKey: "focus:手を打つ",
+        targetChannels: ["R"],
+      },
+    });
+    expect(harness.hashedContexts).toEqual([
+      {
+        original: "大丈夫、手は打ったから。",
+        focus: "手を打つ",
+        answer: "采取措施",
+      },
+    ]);
+    expect(JSON.stringify(transaction.events[0])).not.toContain(
+      "大丈夫、手は打ったから。",
+    );
+  });
+
+  it("rejects an explicitly blank lookup focus before hashing or reading time", async () => {
+    const harness = createDependencyHarness();
+
+    await expect(
+      createCapture(
+        { type: "lookup", original: "手は打った", focus: "  " },
+        harness.dependencies,
+      ),
+    ).rejects.toThrow("focus");
+    expect(harness.hashedContexts).toEqual([]);
+    expect(harness.nowCalls()).toBe(0);
+  });
+
   it("creates the listening-miss capture, L item, and observation chain", async () => {
     const harness = createDependencyHarness();
 
@@ -271,6 +324,45 @@ describe("createCapture", () => {
       },
     });
     expect(JSON.stringify(transaction.events)).not.toContain("lesson.png");
+  });
+
+  it("uses focus for an answered pure-image display while preserving image identity", async () => {
+    const harness = createDependencyHarness();
+
+    const transaction = await createCapture(
+      {
+        type: "lookup",
+        original: "   ",
+        focus: "  パッとしない  ",
+        answer: "  平平无奇  ",
+        image: IMAGE,
+      },
+      harness.dependencies,
+    );
+
+    expect(transaction.context).toEqual({
+      hash: "sha256:context-1",
+      original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+      focus: "パッとしない",
+      answer: "平平无奇",
+      image: IMAGE,
+      createdAt: CAPTURED_AT,
+    });
+    expect(harness.hashedContexts).toEqual([
+      {
+        original: IMAGE_ONLY_CAPTURE_ORIGINAL,
+        focus: "パッとしない",
+        answer: "平平无奇",
+        imageSha256: IMAGE.sha256,
+      },
+    ]);
+    expect(transaction.events[1]).toMatchObject({
+      payload: {
+        display: "パッとしない",
+        identityKey: `image:${IMAGE.sha256}`,
+        targetChannels: ["R"],
+      },
+    });
   });
 
   it("keeps an unanswered pure image as capture-only material", async () => {

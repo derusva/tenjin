@@ -262,6 +262,58 @@ describe("CaptureComposer", () => {
     });
   });
 
+  it("submits and clears an optional lookup focus while keeping the full source", async () => {
+    const user = userEvent.setup();
+    const onSave = vi.fn(async () => undefined);
+
+    render(<CaptureComposer onSave={onSave} />);
+    const original = screen.getByRole("textbox", {
+      name: "遇到的词或表达",
+    });
+    const focus = screen.getByRole("textbox", {
+      name: "要复习的片段（可选）",
+    });
+    const answer = screen.getByRole("textbox", {
+      name: "查到的意思 / 解释（可选）",
+    });
+    await user.type(original, "  大丈夫、手は打ったから。  ");
+    await user.type(focus, "  手を打つ  ");
+    await user.type(answer, "  采取措施  ");
+
+    await user.click(screen.getByRole("button", { name: "记下来" }));
+
+    expect(onSave).toHaveBeenCalledWith({
+      type: "lookup",
+      original: "大丈夫、手は打ったから。",
+      focus: "手を打つ",
+      answer: "采取措施",
+      captureDurationMs: expect.any(Number),
+    });
+    expect(original).toHaveValue("");
+    expect(focus).toHaveValue("");
+    expect(answer).toHaveValue("");
+  });
+
+  it("keeps a lookup focus draft when its field is temporarily hidden", async () => {
+    const user = userEvent.setup();
+
+    render(<CaptureComposer onSave={async () => undefined} />);
+    await user.type(
+      screen.getByRole("textbox", { name: "要复习的片段（可选）" }),
+      "手を打つ",
+    );
+
+    await user.click(screen.getByRole("radio", { name: "没听出" }));
+    expect(
+      screen.queryByRole("textbox", { name: "要复习的片段（可选）" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "查过" }));
+    expect(
+      screen.getByRole("textbox", { name: "要复习的片段（可选）" }),
+    ).toHaveValue("手を打つ");
+  });
+
   it("submits trimmed correction text and omits an explicitly blank correction", async () => {
     let now = 2_000;
     vi.spyOn(Date, "now").mockImplementation(() => now);

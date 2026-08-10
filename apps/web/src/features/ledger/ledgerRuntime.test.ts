@@ -65,6 +65,7 @@ function runtimeHarness(options: {
   const uuids = ["capture-uuid", "item-uuid", "next-uuid"];
   const digestInputs: string[] = [];
   const digests = [...(options.digests ?? ["A1B2C3"])];
+  let nowCallCount = 0;
   const allocator = createAllocator({
     ...(options.startSequence === undefined
       ? {}
@@ -77,7 +78,10 @@ function runtimeHarness(options: {
   const runtime = createLedgerRuntime({
     deviceId: "device-local",
     reserveEventCoordinates: allocator.reserveEventCoordinates,
-    now: () => new Date(dates.shift() ?? LATER),
+    now: () => {
+      nowCallCount += 1;
+      return new Date(dates.shift() ?? LATER);
+    },
     randomUUID: () => uuids.shift() ?? "fallback-uuid",
     digest: async (text) => {
       digestInputs.push(text);
@@ -85,7 +89,12 @@ function runtimeHarness(options: {
     },
   });
 
-  return { allocator, digestInputs, runtime };
+  return {
+    allocator,
+    digestInputs,
+    nowCalls: () => nowCallCount,
+    runtime,
+  };
 }
 
 describe("createLedgerRuntime", () => {
@@ -151,6 +160,29 @@ describe("createLedgerRuntime", () => {
     });
     expect(transaction.events[1]).toMatchObject({ itemId: "item-item-uuid" });
     expect(digestInputs).toEqual([JSON.stringify({ original: "Tenjin" })]);
+  });
+
+  it("includes lookup focus in the digest without replacing the source excerpt", async () => {
+    const { digestInputs, runtime } = runtimeHarness({
+      digests: ["FACE"],
+    });
+
+    const transaction = await runtime.createCapture({
+      type: "lookup",
+      original: "大丈夫、手は打ったから。",
+      focus: "手を打つ",
+      answer: "采取措施",
+    });
+
+    expect(digestInputs).toEqual([
+      '{"original":"大丈夫、手は打ったから。","focus":"手を打つ","answer":"采取措施"}',
+    ]);
+    expect(transaction.context).toMatchObject({
+      hash: "sha256:face",
+      original: "大丈夫、手は打ったから。",
+      focus: "手を打つ",
+      answer: "采取措施",
+    });
   });
 
   it("hashes corrected context with deterministic property order", async () => {
@@ -235,6 +267,21 @@ describe("createLedgerRuntime", () => {
     ).rejects.toThrow("original");
     expect(allocator.calls).toEqual([]);
     expect(digestInputs).toEqual([]);
+  });
+
+  it("rejects an explicitly blank focus before reserving coordinates", async () => {
+    const { allocator, digestInputs, nowCalls, runtime } = runtimeHarness();
+
+    await expect(
+      runtime.createCapture({
+        type: "lookup",
+        original: "手は打った",
+        focus: " \n ",
+      }),
+    ).rejects.toThrow("focus");
+    expect(allocator.calls).toEqual([]);
+    expect(digestInputs).toEqual([]);
+    expect(nowCalls()).toBe(0);
   });
 
   it("keeps physical time scoped to each overlapping capture", async () => {

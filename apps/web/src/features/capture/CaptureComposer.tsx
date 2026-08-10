@@ -24,6 +24,7 @@ import { LocalImagePreview } from "./LocalImagePreview.js";
 export interface CaptureDraft {
   readonly captureType: CaptureCommand["type"];
   readonly original: string;
+  readonly focus: string;
   readonly corrected: string;
   readonly answer: string;
   readonly image: ContextImageRecord | undefined;
@@ -61,12 +62,13 @@ export function CaptureComposer({
   const [internalDraft, setInternalDraft] = useState<CaptureDraft>({
     captureType: "lookup",
     original: "",
+    focus: "",
     corrected: "",
     answer: "",
     image: undefined,
   });
   const currentDraft = draft ?? internalDraft;
-  const { captureType, original, corrected, answer, image } = currentDraft;
+  const { captureType, original, focus, corrected, answer, image } = currentDraft;
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [pasteStatus, setPasteStatus] = useState<PasteStatus>("idle");
   const [imageStatus, setImageStatus] = useState<ImageStatus>("idle");
@@ -215,10 +217,12 @@ export function CaptureComposer({
     let command: CaptureCommand;
 
     if (captureType === "lookup") {
+      const trimmedFocus = focus.trim();
       const trimmedAnswer = answer.trim();
       command = {
         type: "lookup",
         original: trimmedOriginal,
+        ...(trimmedFocus.length === 0 ? {} : { focus: trimmedFocus }),
         ...(trimmedAnswer.length === 0 ? {} : { answer: trimmedAnswer }),
         ...(image === undefined ? {} : { image }),
         captureDurationMs,
@@ -260,6 +264,7 @@ export function CaptureComposer({
       updateDraft({
         captureType: currentDraft.captureType,
         original: "",
+        focus: "",
         corrected: "",
         answer: "",
         image: undefined,
@@ -435,23 +440,42 @@ export function CaptureComposer({
       ) : null}
 
       {captureType === "lookup" ? (
-        <div className="capture-answer">
-          <label htmlFor="capture-answer">查到的意思 / 解释（可选）</label>
-          <textarea
-            className="capture-input capture-input-answer"
-            id="capture-answer"
-            rows={2}
-            value={answer}
-            disabled={isBusy}
-            onChange={(event) => {
-              setSaveStatus("idle");
-              updateDraft({
-                ...currentDraft,
-                answer: event.currentTarget.value,
-              });
-            }}
-          />
-        </div>
+        <>
+          <div className="capture-focus">
+            <label htmlFor="capture-focus">要复习的片段（可选）</label>
+            <textarea
+              className="capture-input capture-input-focus"
+              id="capture-focus"
+              rows={1}
+              value={focus}
+              disabled={isBusy}
+              onChange={(event) => {
+                setSaveStatus("idle");
+                updateDraft({
+                  ...currentDraft,
+                  focus: event.currentTarget.value,
+                });
+              }}
+            />
+          </div>
+          <div className="capture-answer">
+            <label htmlFor="capture-answer">查到的意思 / 解释（可选）</label>
+            <textarea
+              className="capture-input capture-input-answer"
+              id="capture-answer"
+              rows={2}
+              value={answer}
+              disabled={isBusy}
+              onChange={(event) => {
+                setSaveStatus("idle");
+                updateDraft({
+                  ...currentDraft,
+                  answer: event.currentTarget.value,
+                });
+              }}
+            />
+          </div>
+        </>
       ) : null}
 
       {captureType === "production_correction" ? (
