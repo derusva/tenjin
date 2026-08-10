@@ -21,3 +21,11 @@ export {
   type ZipRuntimeProbeResult,
 } from "./zipRuntime.js";
 export { ZIP_PROBE_FIXTURES } from "./zipProbeFixtures.js";
+export {
+  validateContexts,
+  type ContextEntries,
+  type RestoreContextImageMediaType,
+  type RestoreContextImageShape,
+  type RestoreContextShape,
+  type Sha256Hex,
+} from "./validateContexts.js";
