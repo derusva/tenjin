@@ -3,6 +3,12 @@ import type { Event } from "@tenjin/core";
 import { canonicalJson } from "./canonicalJson.js";
 import { sortEventsCanonically } from "./eventOrder.js";
 import { buildManifest, type LedgerPackageMode } from "./manifest.js";
+import {
+  assertCompressedPackageWithinLimit,
+  assertPackageEntrySizesWithinLimits,
+  assertPackageStructureWithinLimits,
+  type PackageEntrySize,
+} from "./limits.js";
 import { deriveWatermark } from "./watermark.js";
 
 export interface ExportContextImage {
@@ -37,6 +43,18 @@ export interface ExportLedgerPackageInput {
   readonly exportedByDeviceId: string;
   readonly exportedAt: string;
 }
+
+type ZipEntry = [Uint8Array, { readonly mtime: Date }];
+
+export interface ExportLedgerPackageDependencies {
+  readonly zip: (
+    files: Readonly<Record<string, ZipEntry>>,
+    options: { readonly level: 6 },
+  ) => Uint8Array;
+}
+
+const DEFAULT_EXPORT_DEPENDENCIES: ExportLedgerPackageDependencies =
+  Object.freeze({ zip: zipSync });
 
 const HASH_PREFIX = "sha256:";
 
@@ -197,7 +215,18 @@ function contextMetadata(context: ExportContext): Record<string, unknown> {
 
 export function exportLedgerPackage(
   input: ExportLedgerPackageInput,
+  dependencies: ExportLedgerPackageDependencies = DEFAULT_EXPORT_DEPENDENCIES,
 ): Uint8Array {
+  const imageCount = input.contexts.reduce(
+    (count, context) => count + (context.image === undefined ? 0 : 1),
+    0,
+  );
+  assertPackageStructureWithinLimits({
+    eventCount: input.events.length,
+    contextCount: input.contexts.length,
+    entryCount: 3 + input.contexts.length + imageCount,
+  });
+
   const events = sortEventsCanonically(input.events);
   const contexts = [...input.contexts].sort((left, right) =>
     left.hash < right.hash ? -1 : left.hash > right.hash ? 1 : 0,
@@ -217,11 +246,27 @@ export function exportLedgerPackage(
     (events.length > 0 ? "\n" : "");
 
   const mtime = zipEntryMtime();
-  const files: Record<string, [Uint8Array, { mtime: Date }]> = {
-    "manifest.json": [strToU8(canonicalJson(manifest)), { mtime }],
-    "events.jsonl": [strToU8(eventsJsonl), { mtime }],
-    "redactions.jsonl": [strToU8(""), { mtime }],
+  const manifestBytes = strToU8(canonicalJson(manifest));
+  const eventsBytes = strToU8(eventsJsonl);
+  const redactionsBytes = strToU8("");
+  const files: Record<string, ZipEntry> = {
+    "manifest.json": [manifestBytes, { mtime }],
+    "events.jsonl": [eventsBytes, { mtime }],
+    "redactions.jsonl": [redactionsBytes, { mtime }],
   };
+  const entrySizes: PackageEntrySize[] = [
+    {
+      name: "manifest.json",
+      kind: "metadata",
+      byteLength: manifestBytes.byteLength,
+    },
+    { name: "events.jsonl", kind: "text", byteLength: eventsBytes.byteLength },
+    {
+      name: "redactions.jsonl",
+      kind: "text",
+      byteLength: redactionsBytes.byteLength,
+    },
+  ];
 
   const seenHashes = new Set<string>();
   for (const context of contexts) {
@@ -235,14 +280,27 @@ export function exportLedgerPackage(
       throw new TypeError(`duplicate context hash: ${context.hash}`);
     }
     seenHashes.add(context.hash);
-    files[`contexts/${hex}.json`] = [
-      strToU8(canonicalJson(contextMetadata(context))),
-      { mtime },
-    ];
+    const metadataName = `contexts/${hex}.json`;
+    const metadataBytes = strToU8(canonicalJson(contextMetadata(context)));
+    files[metadataName] = [metadataBytes, { mtime }];
+    entrySizes.push({
+      name: metadataName,
+      kind: "metadata",
+      byteLength: metadataBytes.byteLength,
+    });
     if (context.image !== undefined) {
-      files[`contexts/${hex}.image`] = [context.image.bytes, { mtime }];
+      const imageName = `contexts/${hex}.image`;
+      files[imageName] = [context.image.bytes, { mtime }];
+      entrySizes.push({
+        name: imageName,
+        kind: "image",
+        byteLength: context.image.bytes.byteLength,
+      });
     }
   }
 
-  return zipSync(files, { level: 6 });
+  assertPackageEntrySizesWithinLimits(entrySizes);
+  const bytes = dependencies.zip(files, { level: 6 });
+  assertCompressedPackageWithinLimit(bytes.byteLength);
+  return bytes;
 }

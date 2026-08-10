@@ -4,6 +4,7 @@ export * from "./watermark.js";
 export * from "./manifest.js";
 export * from "./exportPackage.js";
 export * from "./inspectPackage.js";
+export * from "./limits.js";
 export {
   runZipRuntimeProbe,
   ZIP_ENTRY_OPTIONS,

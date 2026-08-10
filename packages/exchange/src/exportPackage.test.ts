@@ -4,6 +4,7 @@ import type { Event } from "@tenjin/core";
 import { exportLedgerPackage } from "./exportPackage.js";
 import type { ExportContext } from "./exportPackage.js";
 import { scanPackagePlaintext } from "./inspectPackage.js";
+import { PACKAGE_LIMITS } from "./limits.js";
 
 /**
  * The timezone-invariance test has to switch the process timezone, and that is
@@ -419,6 +420,69 @@ describe("exportLedgerPackage", () => {
         ],
       }),
     ).toThrow(prefixed);
+  });
+
+  it("rejects event and context count overflow before calling the zip encoder", () => {
+    const zip = vi.fn(() => new Uint8Array());
+    const dependencies = { zip };
+
+    expect(() =>
+      exportLedgerPackage(
+        {
+          ...input,
+          events: new Array<Event>(PACKAGE_LIMITS.events + 1).fill(
+            input.events[0]!,
+          ),
+        },
+        dependencies,
+      ),
+    ).toThrow(/eventCount/);
+    expect(() =>
+      exportLedgerPackage(
+        {
+          ...input,
+          contexts: new Array<ExportContext>(PACKAGE_LIMITS.contexts + 1).fill(
+            secretContext,
+          ),
+        },
+        dependencies,
+      ),
+    ).toThrow(/contextCount/);
+    expect(zip).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized image entry before calling the zip encoder", () => {
+    const byteLength = PACKAGE_LIMITS.imageEntryBytes + 1;
+    const bytes = { byteLength } as Uint8Array;
+    const zip = vi.fn(() => new Uint8Array());
+
+    expect(() =>
+      exportLedgerPackage(
+        {
+          ...input,
+          contexts: [
+            {
+              ...secretContext,
+              image: { ...secretContext.image!, byteLength, bytes },
+            },
+          ],
+        },
+        { zip },
+      ),
+    ).toThrow(/image entry limit/);
+    expect(zip).not.toHaveBeenCalled();
+  });
+
+  it("checks the compressed byte limit after the zip encoder returns", () => {
+    const oversized = {
+      byteLength: PACKAGE_LIMITS.compressedBytes + 1,
+    } as Uint8Array;
+    const zip = vi.fn(() => oversized);
+
+    expect(() => exportLedgerPackage(input, { zip })).toThrow(
+      /compressed package byteLength/,
+    );
+    expect(zip).toHaveBeenCalledOnce();
   });
 });
 
