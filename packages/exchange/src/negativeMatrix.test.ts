@@ -13,6 +13,7 @@ import {
 } from "./exportPackage.js";
 import { readPackage, type ReadLedgerPackage } from "./readPackage.js";
 import { buildLedgerRestorePlan } from "./restorePlan.js";
+import { UnsupportedSchemaVersionError } from "./manifest.js";
 import type { Sha256Hex } from "./validateContexts.js";
 import { ZIP_PROBE_FIXTURES } from "./zipProbeFixtures.js";
 import { ZipRuntimeError } from "./zipRuntime.js";
@@ -128,6 +129,7 @@ async function exportedSource(options: {
       exportedAt: EXPORTED_AT,
       events: options.events,
       contexts: options.contexts ?? [],
+      importReceipts: [],
     }),
   );
 }
@@ -225,14 +227,14 @@ describe("A1 T12 package mutation matrix", () => {
 
   it("#6 rejects a future manifest schema version", async () => {
     const source = await exportedSource({ events: [] });
+    const error = await buildLedgerRestorePlan(
+      withManifest(source, { schemaVersion: 3, futureField: true }),
+      fakeSha256Hex,
+    ).catch((candidate: unknown) => candidate);
 
-    await expectNamedTypeError(
-      buildLedgerRestorePlan(
-        withManifest(source, { schemaVersion: 3 }),
-        fakeSha256Hex,
-      ),
-      /schemaVersion/i,
-    );
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).toBeInstanceOf(UnsupportedSchemaVersionError);
+    expect(error).toMatchObject({ code: "UNSUPPORTED_SCHEMA_VERSION" });
   });
 
   it("#7 rejects a duplicate eventId whose second event has different content", async () => {

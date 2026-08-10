@@ -6,6 +6,7 @@ import {
   readPackageForTest,
 } from "./readPackage.js";
 import { ZIP_PROBE_FIXTURES } from "./zipProbeFixtures.js";
+import { PACKAGE_LIMITS } from "./limits.js";
 import {
   type RuntimeZipEntry,
   type RuntimeZipReader,
@@ -84,6 +85,43 @@ describe("readPackage", () => {
     ).resolves.toMatchObject({ redactionsJsonl: "" });
   });
 
+  it("reads import-receipts.json as strict UTF-8 while keeping it optional for v1", async () => {
+    await expect(readPackage(packageBytes(validEntries()))).resolves.not.toHaveProperty(
+      "importReceiptsJson",
+    );
+    await expect(
+      readPackage(
+        packageBytes({
+          ...validEntries(),
+          "import-receipts.json": strToU8("[]"),
+        }),
+      ),
+    ).resolves.toMatchObject({ importReceiptsJson: "[]" });
+  });
+
+  it("rejects invalid UTF-8 in import-receipts.json", async () => {
+    await expect(
+      readPackage(
+        packageBytes({
+          ...validEntries(),
+          "import-receipts.json": new Uint8Array([0xc3, 0x28]),
+        }),
+      ),
+    ).rejects.toThrow("import-receipts.json is not valid UTF-8");
+  });
+
+  it("applies the text-entry limit to import-receipts.json", async () => {
+    const receiptText = " ".repeat(PACKAGE_LIMITS.metadataEntryBytes + 1);
+    await expect(
+      readPackage(
+        packageBytes({
+          ...validEntries(),
+          "import-receipts.json": strToU8(receiptText),
+        }),
+      ),
+    ).resolves.toMatchObject({ importReceiptsJson: receiptText });
+  });
+
   it("rejects a non-empty redactions.jsonl", async () => {
     await expect(
       readPackage(
@@ -95,7 +133,7 @@ describe("readPackage", () => {
   });
 
   it("rejects a path traversal entry name", async () => {
-    // Whitelist, not blacklist: anything that is not exactly one of the five
+    // Whitelist, not blacklist: anything that is not exactly one of the six
     // legal shapes is rejected, so `../` never needs a special case.
     await expect(
       readPackage(
@@ -104,6 +142,17 @@ describe("readPackage", () => {
     ).rejects.toMatchObject({
       code: "PACKAGE_ENTRY_NAME_INVALID",
     });
+  });
+
+  it("rejects a near-miss receipt entry name", async () => {
+    await expect(
+      readPackage(
+        packageBytes({
+          ...validEntries(),
+          "import-receipts.jsonl": strToU8("[]"),
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "PACKAGE_ENTRY_NAME_INVALID" });
   });
 
   it("rejects a duplicate entry name on the second generator yield", async () => {

@@ -12,7 +12,7 @@ describe("package limits", () => {
     expect(() =>
       assertPackageStructureWithinLimits({
         eventCount: PACKAGE_LIMITS.events,
-        contextCount: 32_766,
+        contextCount: 32_765,
         entryCount: 65_535,
       }),
     ).not.toThrow();
@@ -21,10 +21,10 @@ describe("package limits", () => {
   it.each([
     [
       "eventCount",
-      { eventCount: PACKAGE_LIMITS.events + 1, contextCount: 0, entryCount: 3 },
+      { eventCount: PACKAGE_LIMITS.events + 1, contextCount: 0, entryCount: 4 },
     ],
-    ["contextCount", { eventCount: 0, contextCount: 32_767, entryCount: 3 }],
-    ["entryCount", { eventCount: 0, contextCount: 32_766, entryCount: 65_536 }],
+    ["contextCount", { eventCount: 0, contextCount: 32_766, entryCount: 4 }],
+    ["entryCount", { eventCount: 0, contextCount: 32_765, entryCount: 65_536 }],
   ] as const)("rejects %s above its structural boundary", (_name, counts) => {
     expect(() => assertPackageStructureWithinLimits(counts)).toThrow(RangeError);
   });
@@ -92,7 +92,7 @@ describe("package limits", () => {
       assertPackageStructureWithinLimits({
         eventCount: -1,
         contextCount: 0,
-        entryCount: 3,
+        entryCount: 4,
       }),
     ).toThrow(TypeError);
     expect(() => assertCompressedPackageWithinLimit(0.5)).toThrow(TypeError);

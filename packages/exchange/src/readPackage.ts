@@ -28,6 +28,7 @@ export class ReadPackageError extends Error {
 export interface ReadLedgerPackage {
   readonly manifestJson: string;
   readonly eventsJsonl: string;
+  readonly importReceiptsJson?: string;
   readonly redactionsJsonl: "";
   readonly contextJsonByHash: ReadonlyMap<string, string>;
   readonly contextImageByHash: ReadonlyMap<string, Uint8Array>;
@@ -48,7 +49,11 @@ const PRODUCTION_ZIP_LIMITS: ZipRuntimeLimits = Object.freeze({
 
 function entryKind(filename: string): "image" | "metadata" | "text" {
   if (filename.endsWith(".image")) return "image";
-  if (filename === "events.jsonl" || filename === "redactions.jsonl") {
+  if (
+    filename === "events.jsonl" ||
+    filename === "redactions.jsonl" ||
+    filename === "import-receipts.json"
+  ) {
     return "text";
   }
   return "metadata";
@@ -78,6 +83,7 @@ function assertAllowedEntry(entry: RuntimeZipEntry): void {
     entry.filename === "manifest.json" ||
     entry.filename === "events.jsonl" ||
     entry.filename === "redactions.jsonl" ||
+    entry.filename === "import-receipts.json" ||
     CONTEXT_ENTRY_PATTERN.test(entry.filename)
   ) {
     return;
@@ -119,6 +125,11 @@ async function readPackageWithDependencies(
     requiredEntry(raw.entries, "events.jsonl"),
     "events.jsonl",
   );
+  const importReceiptsBytes = raw.entries.get("import-receipts.json");
+  const importReceiptsJson =
+    importReceiptsBytes === undefined
+      ? undefined
+      : decodeUtf8Strict(importReceiptsBytes, "import-receipts.json");
   const redactionsBytes = raw.entries.get("redactions.jsonl");
   if (redactionsBytes !== undefined && redactionsBytes.byteLength !== 0) {
     throw new ReadPackageError(
@@ -146,6 +157,7 @@ async function readPackageWithDependencies(
   return Object.freeze({
     manifestJson,
     eventsJsonl,
+    ...(importReceiptsJson === undefined ? {} : { importReceiptsJson }),
     redactionsJsonl: "" as const,
     contextJsonByHash,
     contextImageByHash,

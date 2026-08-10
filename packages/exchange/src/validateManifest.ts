@@ -1,7 +1,7 @@
 import type { Event } from "@tenjin/core";
 
 import {
-  assertManifestV1Shape,
+  parseLedgerPackageManifest,
   type LedgerPackageManifest,
 } from "./manifest.js";
 import { deriveWatermark } from "./watermark.js";
@@ -9,6 +9,8 @@ import { deriveWatermark } from "./watermark.js";
 export interface ManifestActuals {
   readonly events: readonly Event[];
   readonly contextCount: number;
+  readonly importReceiptCount: number;
+  readonly hasImportReceiptsEntry: boolean;
 }
 
 function sameNumberRecord(
@@ -30,21 +32,15 @@ function sameNumberRecord(
 
 /**
  * Validates the manifest read from a package. Shape rules live exclusively in
- * assertManifestV1Shape; this layer only cross-checks claims against bytes that
- * were independently read and events that were independently validated.
+ * the version-dispatched manifest parser; this layer only cross-checks claims
+ * against bytes that were independently read and events that were independently
+ * validated.
  */
 export function validateManifest(
   manifestJson: string,
   actuals: ManifestActuals,
 ): LedgerPackageManifest {
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(manifestJson) as unknown;
-  } catch {
-    throw new TypeError("manifest must be valid JSON");
-  }
-
-  assertManifestV1Shape(candidate);
+  const candidate = parseLedgerPackageManifest(manifestJson);
 
   if (candidate.eventCount !== actuals.events.length) {
     throw new TypeError(
@@ -55,6 +51,24 @@ export function validateManifest(
     throw new TypeError(
       `manifest contextCount ${candidate.contextCount} does not equal actual context count ${actuals.contextCount}`,
     );
+  }
+  if (candidate.schemaVersion === 1) {
+    if (actuals.hasImportReceiptsEntry || actuals.importReceiptCount !== 0) {
+      throw new TypeError(
+        "schemaVersion 1 must not carry import-receipts.json or import receipts",
+      );
+    }
+  } else {
+    if (!actuals.hasImportReceiptsEntry) {
+      throw new TypeError(
+        "schemaVersion 2 requires import-receipts.json even when importReceiptCount is zero",
+      );
+    }
+    if (candidate.importReceiptCount !== actuals.importReceiptCount) {
+      throw new TypeError(
+        `manifest importReceiptCount ${candidate.importReceiptCount} does not equal actual import receipt count ${actuals.importReceiptCount}`,
+      );
+    }
   }
 
   const derived = deriveWatermark(actuals.events);

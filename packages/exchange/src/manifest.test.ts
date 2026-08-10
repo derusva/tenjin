@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertLedgerPackageManifestShape,
   assertManifestV1Shape,
+  assertManifestV2Shape,
   buildManifest,
+  UnsupportedSchemaVersionError,
   type BuildManifestInput,
 } from "./manifest.js";
 
@@ -11,6 +14,7 @@ const baseInput = {
   exportedAt: "2026-08-05T12:00:00.000Z",
   eventCount: 3,
   contextCount: 2,
+  importReceiptCount: 0,
   watermark: {
     maxSeqByDevice: { "device-a": 3 },
     maxHlc: { wallTime: 42, counter: 1 },
@@ -29,6 +33,13 @@ const validManifest = {
   maxSeqByDevice: { "device-a": 3 },
   maxHlc: { wallTime: 42, counter: 1 },
   foldExternalState: [],
+};
+
+const validManifestV2 = {
+  ...validManifest,
+  schemaVersion: 2,
+  importReceiptCount: 1,
+  foldExternalState: ["importReceipts"],
 };
 
 describe("assertManifestV1Shape", () => {
@@ -88,16 +99,59 @@ describe("assertManifestV1Shape", () => {
   });
 });
 
+describe("manifest version dispatch", () => {
+  it("accepts the closed v2 shape and exact receipt fold descriptor", () => {
+    expect(() => assertManifestV2Shape(validManifestV2)).not.toThrow();
+    expect(() => assertLedgerPackageManifestShape(validManifest)).not.toThrow();
+    expect(() =>
+      assertLedgerPackageManifestShape(validManifestV2),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ["missing receipt count", { ...validManifestV2, importReceiptCount: undefined }, /importReceiptCount/i],
+    ["negative receipt count", { ...validManifestV2, importReceiptCount: -1 }, /importReceiptCount/i],
+    ["v1 fold descriptor", { ...validManifestV2, foldExternalState: [] }, /foldExternalState/i],
+    ["extra fold descriptor", { ...validManifestV2, foldExternalState: ["importReceipts", "future"] }, /foldExternalState/i],
+    ["unknown field", { ...validManifestV2, future: true }, /unknown.*future/i],
+  ])("rejects a v2 manifest with %s", (_name, candidate, message) => {
+    expect(() => assertManifestV2Shape(candidate)).toThrow(message as RegExp);
+  });
+
+  it("rejects v3+ with a dedicated TypeError subclass and stable code", () => {
+    const candidate = {
+      ...validManifestV2,
+      schemaVersion: 3,
+      futureField: true,
+    };
+    const error = (() => {
+      try {
+        assertLedgerPackageManifestShape(candidate);
+        return undefined;
+      } catch (caught) {
+        return caught;
+      }
+    })();
+
+    expect(error).toBeInstanceOf(TypeError);
+    expect(error).toBeInstanceOf(UnsupportedSchemaVersionError);
+    expect(error).toMatchObject({ code: "UNSUPPORTED_SCHEMA_VERSION" });
+  });
+});
+
 describe("buildManifest", () => {
   it("stamps the package kind, schema version and generation", () => {
     const manifest = buildManifest(baseInput);
     expect(manifest.packageKind).toBe("tenjin-ledger");
-    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.schemaVersion).toBe(2);
     expect(manifest.generation).toBe(0);
   });
 
-  it("never emits fold-external state in v1", () => {
-    expect(buildManifest(baseInput).foldExternalState).toEqual([]);
+  it("always emits the v2 receipt count and fold-external descriptor", () => {
+    expect(buildManifest(baseInput).importReceiptCount).toBe(0);
+    expect(buildManifest(baseInput).foldExternalState).toEqual([
+      "importReceipts",
+    ]);
   });
 
   it("stamps the only mode this version can produce", () => {
@@ -167,6 +221,9 @@ describe("buildManifest", () => {
     expect(() =>
       buildManifest({ ...baseInput, contextCount: 0.5 }),
     ).toThrow(/contextCount/i);
+    expect(() =>
+      buildManifest({ ...baseInput, importReceiptCount: -1 }),
+    ).toThrow(/importReceiptCount/i);
     expect(() =>
       buildManifest({
         ...baseInput,

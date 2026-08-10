@@ -36,6 +36,7 @@ interface TestImageMetadata {
 interface TestContextMetadata {
   readonly hash: unknown;
   readonly original: unknown;
+  readonly focus?: unknown;
   readonly corrected?: unknown;
   readonly answer?: unknown;
   readonly image?: unknown;
@@ -51,11 +52,13 @@ interface ContextFixture {
 async function contextFixture(options: {
   readonly withImage?: boolean;
   readonly original?: string;
+  readonly focus?: string | undefined;
   readonly corrected?: string | undefined;
   readonly answer?: string | undefined;
   readonly bytes?: Uint8Array;
 } = {}): Promise<ContextFixture> {
   const original = options.original ?? "大丈夫、手は打ったから。";
+  const focus = options.focus;
   const corrected = options.corrected;
   const answer = Object.hasOwn(options, "answer")
     ? options.answer
@@ -69,6 +72,7 @@ async function contextFixture(options: {
     strToU8(
       serializeContextHashInput({
         original,
+        ...(focus === undefined ? {} : { focus }),
         ...(corrected === undefined ? {} : { corrected }),
         ...(answer === undefined ? {} : { answer }),
         ...(imageSha256 === undefined ? {} : { imageSha256 }),
@@ -91,6 +95,7 @@ async function contextFixture(options: {
     metadata: {
       hash: `sha256:${entryHash}`,
       original,
+      ...(focus === undefined ? {} : { focus }),
       ...(corrected === undefined ? {} : { corrected }),
       ...(answer === undefined ? {} : { answer }),
       ...(image === undefined ? {} : { image }),
@@ -117,6 +122,22 @@ function entriesFor(
 }
 
 describe("validateContexts", () => {
+  it("v2 preserves focus and includes it in context identity", async () => {
+    const fixture = await contextFixture({ focus: "focused chunk" });
+
+    await expect(
+      validateContexts(entriesFor(fixture), fakeSha256Hex, 2),
+    ).resolves.toEqual([fixture.metadata]);
+  });
+
+  it("v1 rejects focus instead of silently widening the legacy schema", async () => {
+    const fixture = await contextFixture({ focus: "focused chunk" });
+
+    await expect(
+      validateContexts(entriesFor(fixture), fakeSha256Hex, 1),
+    ).rejects.toThrow(/unknown context field.*focus/i);
+  });
+
   it("returns a validated context without optional fields", async () => {
     const fixture = await contextFixture({ answer: undefined });
 

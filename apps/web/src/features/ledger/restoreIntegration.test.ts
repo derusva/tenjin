@@ -16,8 +16,7 @@ import {
   verifyLedgerEquivalence,
   type ContextImageRecord,
   type ContextRecord,
-  type LedgerRepository,
-  type LedgerRestorer,
+  type OpenedLedgerRepository,
   type RestoreLedgerInput,
   type ReviewQueueProbe,
 } from "@tenjin/storage-indexeddb";
@@ -34,7 +33,7 @@ const DISCARDED_AT = "2026-08-11T01:01:00.000Z";
 const EXPORTED_AT = "2026-08-11T02:00:00.000Z";
 const IMAGE_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 
-type TestRepository = LedgerRepository & LedgerRestorer;
+type TestRepository = OpenedLedgerRepository;
 
 interface SourceHarness {
   readonly databaseName: string;
@@ -169,6 +168,7 @@ async function toExportContext(context: ContextRecord): Promise<ExportContext> {
   return {
     hash: context.hash,
     original: context.original,
+    ...(context.focus === undefined ? {} : { focus: context.focus }),
     ...(context.corrected === undefined ? {} : { corrected: context.corrected }),
     ...(context.answer === undefined ? {} : { answer: context.answer }),
     ...(image === undefined
@@ -187,11 +187,18 @@ async function toExportContext(context: ContextRecord): Promise<ExportContext> {
 }
 
 async function exportSourcePackage(source: SourceHarness): Promise<Uint8Array> {
-  const snapshot = await source.repository.readSnapshot();
+  return exportRepositoryPackage(source.repository);
+}
+
+async function exportRepositoryPackage(
+  repository: TestRepository,
+): Promise<Uint8Array> {
+  const snapshot = await repository.readBackupSnapshot();
   const contexts = await Promise.all(snapshot.contexts.map(toExportContext));
   return exportLedgerPackage({
     events: snapshot.events,
     contexts,
+    importReceipts: snapshot.importReceipts,
     mode: "full-backup",
     exportedByDeviceId: SOURCE_DEVICE_ID,
     exportedAt: EXPORTED_AT,
@@ -351,6 +358,62 @@ describe("A1 ledger backup restore integration", () => {
     expect(digest).toBe(
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
+  });
+
+  it("bridges focused Coach state through v2 export, empty restore, equivalence, and re-export", async () => {
+    const source = await createSourceHarness("focused-receipt");
+    const transaction = await source.runtime.createCapture({
+      type: "lookup",
+      original: "The full source sentence contains a focused chunk.",
+      focus: "focused chunk",
+      answer: "target meaning",
+    });
+    const captureCreated = transaction.events.find(
+      (event) => event.kind === "capture_created",
+    );
+    if (captureCreated?.kind !== "capture_created") {
+      throw new Error("fixture did not create a capture_created event");
+    }
+    const receipt = {
+      digest: `sha256:${await sha256Hex(
+        new TextEncoder().encode("canonical Coach transfer"),
+      )}`,
+      importedAt: transaction.context.createdAt,
+      captureIds: [captureCreated.captureId],
+    } as const;
+    await expect(
+      source.repository.appendImportedCaptureBatch(
+        [{ events: transaction.events, context: transaction.context }],
+        receipt,
+      ),
+    ).resolves.toBe("imported");
+
+    const packageBytes = await exportSourcePackage(source);
+    const read = await readPackage(packageBytes);
+    expect(JSON.parse(read.manifestJson)).toMatchObject({
+      schemaVersion: 2,
+      importReceiptCount: 1,
+      foldExternalState: ["importReceipts"],
+    });
+    expect(JSON.parse(read.importReceiptsJson ?? "null")).toEqual([receipt]);
+
+    const harness = await restoreReadPackage("focused-receipt", source, read);
+    expect(harness.plan.contexts).toEqual([
+      expect.objectContaining({ focus: "focused chunk" }),
+    ]);
+    expect(harness.plan.importReceipts).toEqual([receipt]);
+    await expect(
+      verifyRoundTrip(harness, realReviewQueueProbe),
+    ).resolves.toEqual({ ok: true, failures: [] });
+
+    const restoredBackup = await harness.restored.readBackupSnapshot();
+    expect(restoredBackup.contexts).toEqual([
+      expect.objectContaining({ focus: "focused chunk" }),
+    ]);
+    expect(restoredBackup.importReceipts).toEqual([receipt]);
+    await expect(
+      exportRepositoryPackage(harness.restored),
+    ).resolves.toEqual(packageBytes);
   });
 
   it("round-trips a real image capture and invokes the real review queue exactly twice", async () => {

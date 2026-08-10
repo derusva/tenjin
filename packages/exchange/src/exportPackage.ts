@@ -2,6 +2,10 @@ import { strToU8, zipSync } from "fflate";
 import type { Event } from "@tenjin/core";
 import { canonicalJson } from "./canonicalJson.js";
 import { sortEventsCanonically } from "./eventOrder.js";
+import {
+  validateImportReceipts,
+  type PackageImportReceipt,
+} from "./importReceipts.js";
 import { buildManifest, type LedgerPackageMode } from "./manifest.js";
 import {
   assertCompressedPackageWithinLimit,
@@ -19,17 +23,11 @@ export interface ExportContextImage {
   readonly bytes: Uint8Array;
 }
 
-/**
- * Mirrors the production `ContextRecord` exactly - no more, no less.
- *
- * A `focus` field used to be pre-reserved here. It is gone: nothing implemented
- * it, and landing it for real changes what a context hash covers, i.e. content
- * identity. That has to ride a schemaVersion bump, not arrive quietly inside
- * v1 packages.
- */
+/** Mirrors the production `ContextRecord` exactly - no more, no less. */
 export interface ExportContext {
   readonly hash: string;
   readonly original: string;
+  readonly focus?: string;
   readonly corrected?: string;
   readonly answer?: string;
   readonly image?: ExportContextImage;
@@ -39,6 +37,7 @@ export interface ExportContext {
 export interface ExportLedgerPackageInput {
   readonly events: readonly Event[];
   readonly contexts: readonly ExportContext[];
+  readonly importReceipts: readonly PackageImportReceipt[];
   readonly mode: LedgerPackageMode;
   readonly exportedByDeviceId: string;
   readonly exportedAt: string;
@@ -122,12 +121,13 @@ function hashToEntryName(hash: string): string {
 }
 
 /**
- * schemaVersion 1 has a CLOSED field list, enumerated here rather than derived
+ * schemaVersion 2 has a CLOSED field list, enumerated here rather than derived
  * from a spread. These names are the production `ContextRecord` fields.
  */
 const CONTEXT_FIELDS: readonly string[] = [
   "hash",
   "original",
+  "focus",
   "corrected",
   "answer",
   "image",
@@ -163,7 +163,7 @@ function assertNoUnknownFields(
     .sort();
   if (unknown.length > 0) {
     throw new TypeError(
-      `${subject} carries unknown field(s) ${unknown.join(", ")}; schemaVersion 1 has a closed field list, and a backup must not drop them silently`,
+      `${subject} carries unknown field(s) ${unknown.join(", ")}; schemaVersion 2 has a closed field list, and a backup must not drop them silently`,
     );
   }
 }
@@ -176,6 +176,9 @@ function contextMetadata(context: ExportContext): Record<string, unknown> {
     original: context.original,
     createdAt: context.createdAt,
   };
+  if (context.focus !== undefined) {
+    metadata.focus = context.focus;
+  }
   if (context.corrected !== undefined) {
     metadata.corrected = context.corrected;
   }
@@ -224,12 +227,21 @@ export function exportLedgerPackage(
   assertPackageStructureWithinLimits({
     eventCount: input.events.length,
     contextCount: input.contexts.length,
-    entryCount: 3 + input.contexts.length + imageCount,
+    entryCount: 4 + input.contexts.length + imageCount,
   });
 
   const events = sortEventsCanonically(input.events);
   const contexts = [...input.contexts].sort((left, right) =>
     left.hash < right.hash ? -1 : left.hash > right.hash ? 1 : 0,
+  );
+  const availableCaptureIds = new Set(
+    events
+      .filter((event) => event.kind === "capture_created")
+      .map((event) => event.captureId),
+  );
+  const importReceipts = validateImportReceipts(
+    input.importReceipts,
+    availableCaptureIds,
   );
 
   const manifest = buildManifest({
@@ -238,6 +250,7 @@ export function exportLedgerPackage(
     exportedAt: input.exportedAt,
     eventCount: events.length,
     contextCount: contexts.length,
+    importReceiptCount: importReceipts.length,
     watermark: deriveWatermark(events),
   });
 
@@ -249,10 +262,12 @@ export function exportLedgerPackage(
   const manifestBytes = strToU8(canonicalJson(manifest));
   const eventsBytes = strToU8(eventsJsonl);
   const redactionsBytes = strToU8("");
+  const importReceiptsBytes = strToU8(canonicalJson(importReceipts));
   const files: Record<string, ZipEntry> = {
     "manifest.json": [manifestBytes, { mtime }],
     "events.jsonl": [eventsBytes, { mtime }],
     "redactions.jsonl": [redactionsBytes, { mtime }],
+    "import-receipts.json": [importReceiptsBytes, { mtime }],
   };
   const entrySizes: PackageEntrySize[] = [
     {
@@ -265,6 +280,11 @@ export function exportLedgerPackage(
       name: "redactions.jsonl",
       kind: "text",
       byteLength: redactionsBytes.byteLength,
+    },
+    {
+      name: "import-receipts.json",
+      kind: "text",
+      byteLength: importReceiptsBytes.byteLength,
     },
   ];
 

@@ -116,18 +116,24 @@ function imageOnlyContext(bytes: Uint8Array): ExportContext {
 const input = {
   events: [itemCreatedEvent(2, 20), captureEvent(1, 10)],
   contexts: [secretContext],
+  importReceipts: [],
   mode: "full-backup" as const,
   exportedByDeviceId: "device-a",
   exportedAt: "2026-08-05T12:00:00.000Z",
 };
 
+const RECEIPT_DIGEST_A = `sha256:${"a".repeat(64)}`;
+const RECEIPT_DIGEST_B = `sha256:${"b".repeat(64)}`;
+
 describe("exportLedgerPackage", () => {
-  it("writes manifest, events and redactions", () => {
+  it("writes the four fixed v2 entries, including an empty receipt array", () => {
     const entries = unzipSync(exportLedgerPackage(input));
     expect(Object.keys(entries)).toContain("manifest.json");
     expect(Object.keys(entries)).toContain("events.jsonl");
     expect(Object.keys(entries)).toContain("redactions.jsonl");
+    expect(Object.keys(entries)).toContain("import-receipts.json");
     expect(strFromU8(entries["redactions.jsonl"]!)).toBe("");
+    expect(strFromU8(entries["import-receipts.json"]!)).toBe("[]");
   });
 
   it("serialises events in canonical order, one per line", () => {
@@ -158,7 +164,44 @@ describe("exportLedgerPackage", () => {
     expect(manifest.contextCount).toBe(1);
     expect(manifest.eventCount).toBe(2);
     expect(manifest.mode).toBe("full-backup");
-    expect(manifest.foldExternalState).toEqual([]);
+    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.importReceiptCount).toBe(0);
+    expect(manifest.foldExternalState).toEqual(["importReceipts"]);
+  });
+
+  it("sorts receipts by digest without reordering their captureIds", () => {
+    const entries = unzipSync(
+      exportLedgerPackage({
+        ...input,
+        events: [...input.events, captureEvent(3, 30)],
+        importReceipts: [
+          {
+            digest: RECEIPT_DIGEST_B,
+            importedAt: "2026-08-05T11:00:00.000Z",
+            captureIds: ["capture-1"],
+          },
+          {
+            digest: RECEIPT_DIGEST_A,
+            importedAt: "2026-08-05T10:00:00.000Z",
+            captureIds: ["capture-3", "capture-1"],
+          },
+        ],
+      }),
+    );
+    expect(JSON.parse(strFromU8(entries["import-receipts.json"]!))).toEqual([
+      {
+        captureIds: ["capture-3", "capture-1"],
+        digest: RECEIPT_DIGEST_A,
+        importedAt: "2026-08-05T10:00:00.000Z",
+      },
+      {
+        captureIds: ["capture-1"],
+        digest: RECEIPT_DIGEST_B,
+        importedAt: "2026-08-05T11:00:00.000Z",
+      },
+    ]);
+    const manifest = JSON.parse(strFromU8(entries["manifest.json"]!));
+    expect(manifest.importReceiptCount).toBe(2);
   });
 
   it("produces byte-identical output for the same input", () => {
@@ -292,27 +335,30 @@ describe("exportLedgerPackage", () => {
     });
   });
 
-  it("rejects unknown context fields instead of silently shipping them", () => {
-    // `contextMetadata` used to spread `...rest`, so whatever the caller passed
-    // landed in contexts/<hash>.json inside a schemaVersion 1 package -
-    // including the `focus` field the interface had pre-reserved. In a
-    // content-addressed layer that manufactures two objects with the same hash
-    // and different stored content.
-    //
-    // Dropping the extras silently would be the worse cure: this is a BACKUP
-    // path, and a backup that quietly discards a field it was handed loses
-    // data. Landing `focus` for real changes hash and identity semantics and
-    // must ride a schemaVersion bump.
+  it("rejects fields outside the closed v2 context shape", () => {
+    // The writer enumerates the active schema fields instead of spreading an
+    // object. Dropping a future field would make a backup look successful while
+    // silently losing state.
     const withUnknown = { ...secretContext, focus: "手を打つ", futureField: 1 };
     expect(() =>
       exportLedgerPackage({ ...input, contexts: [withUnknown] }),
     ).toThrow(TypeError);
     expect(() =>
       exportLedgerPackage({ ...input, contexts: [withUnknown] }),
-    ).toThrow(/focus/);
-    expect(() =>
-      exportLedgerPackage({ ...input, contexts: [withUnknown] }),
     ).toThrow(/futureField/);
+  });
+
+  it("preserves focus in v2 context metadata", () => {
+    const entries = unzipSync(
+      exportLedgerPackage({
+        ...input,
+        contexts: [{ ...secretContext, focus: "focused chunk" }],
+      }),
+    );
+    const stored = JSON.parse(
+      strFromU8(entries[`contexts/${SECRET_HEX}.json`]!),
+    );
+    expect(stored.focus).toBe("focused chunk");
   });
 
   it("rejects unknown context image fields as well", () => {

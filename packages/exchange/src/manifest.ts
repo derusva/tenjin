@@ -1,17 +1,10 @@
 import type { LedgerWatermark } from "./watermark.js";
 
-/**
- * v1 can only produce full backups. The abstract-exchange mode is deferred
- * until `focus` separation lands, because item_created.payload.display
- * currently carries the source sentence (createCapture.ts:165), so an
- * "abstract" package could not honour its only promise. Restorers must reject
- * any mode they do not recognise.
- */
+/** The only package mode implemented by either supported schema version. */
 export type LedgerPackageMode = "full-backup";
 
-export interface LedgerPackageManifest {
+interface LedgerPackageManifestBase {
   readonly packageKind: "tenjin-ledger";
-  readonly schemaVersion: 1;
   readonly mode: LedgerPackageMode;
   readonly generation: 0;
   readonly exportedByDeviceId: string;
@@ -20,19 +13,28 @@ export interface LedgerPackageManifest {
   readonly contextCount: number;
   readonly maxSeqByDevice: Readonly<Record<string, number>>;
   readonly maxHlc: LedgerWatermark["maxHlc"];
-  /**
-   * Forward-compatibility guard, NOT a reserved slot.
-   *
-   * A non-empty array means the package carries fold-external state (the first
-   * case will be Coach import receipts) that the reading version may not
-   * understand. A restorer that does not understand every listed key MUST
-   * reject the whole package rather than silently dropping the state - a
-   * silent drop produces a restore that looks successful while the idempotency
-   * record is gone. v1 exports always emit an empty array; actually adding
-   * such state bumps schemaVersion to 2.
-   */
+}
+
+/** Legacy packages have no focus field and no fold-external receipt state. */
+export interface LedgerPackageManifestV1 extends LedgerPackageManifestBase {
+  readonly schemaVersion: 1;
   readonly foldExternalState: readonly [];
 }
+
+/**
+ * v2 closes the backup hole introduced by durable Coach import receipts.
+ * The singleton descriptor is an active compatibility guard: a reader must
+ * understand and restore the named state rather than silently discard it.
+ */
+export interface LedgerPackageManifestV2 extends LedgerPackageManifestBase {
+  readonly schemaVersion: 2;
+  readonly importReceiptCount: number;
+  readonly foldExternalState: readonly ["importReceipts"];
+}
+
+export type LedgerPackageManifest =
+  | LedgerPackageManifestV1
+  | LedgerPackageManifestV2;
 
 export interface BuildManifestInput {
   readonly mode: LedgerPackageMode;
@@ -40,11 +42,31 @@ export interface BuildManifestInput {
   readonly exportedAt: string;
   readonly eventCount: number;
   readonly contextCount: number;
+  readonly importReceiptCount: number;
   readonly watermark: LedgerWatermark;
 }
 
-const CANONICAL_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
-const MANIFEST_FIELDS: readonly string[] = [
+export type UnsupportedSchemaVersionErrorCode =
+  "UNSUPPORTED_SCHEMA_VERSION";
+
+/** A stable, machine-readable refusal for packages from a future schema. */
+export class UnsupportedSchemaVersionError extends TypeError {
+  readonly code: UnsupportedSchemaVersionErrorCode =
+    "UNSUPPORTED_SCHEMA_VERSION";
+  readonly schemaVersion: number;
+
+  constructor(schemaVersion: number) {
+    super(
+      `UNSUPPORTED_SCHEMA_VERSION: package schemaVersion ${schemaVersion} is newer than supported schemaVersion 2`,
+    );
+    this.name = "UnsupportedSchemaVersionError";
+    this.schemaVersion = schemaVersion;
+  }
+}
+
+const CANONICAL_UTC_TIMESTAMP =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+const MANIFEST_V1_FIELDS: readonly string[] = [
   "packageKind",
   "schemaVersion",
   "mode",
@@ -56,6 +78,10 @@ const MANIFEST_FIELDS: readonly string[] = [
   "maxSeqByDevice",
   "maxHlc",
   "foldExternalState",
+];
+const MANIFEST_V2_FIELDS: readonly string[] = [
+  ...MANIFEST_V1_FIELDS,
+  "importReceiptCount",
 ];
 const MAX_HLC_FIELDS: readonly string[] = ["wallTime", "counter"];
 
@@ -131,24 +157,9 @@ function assertMaxSeqByDevice(
   }
 }
 
-/**
- * The one complete v1 manifest shape validator shared by writer and reader.
- * Keep all shape-only rules here; validateManifest adds only comparisons with
- * the actual package contents.
- */
-export function assertManifestV1Shape(
-  value: unknown,
-): asserts value is LedgerPackageManifest {
-  if (!isRecord(value)) {
-    throw new TypeError("manifest must be an object");
-  }
-  assertNoUnknownFields(value, MANIFEST_FIELDS, "manifest");
-
+function assertCommonManifestShape(value: Record<string, unknown>): void {
   if (value.packageKind !== "tenjin-ledger") {
     throw new TypeError('packageKind must equal "tenjin-ledger"');
-  }
-  if (value.schemaVersion !== 1) {
-    throw new TypeError("schemaVersion must equal the number 1");
   }
   if (value.mode !== "full-backup") {
     throw new TypeError(
@@ -189,7 +200,20 @@ export function assertManifestV1Shape(
   assertNonNegativeSafeInteger(value.contextCount, "contextCount");
   assertMaxHlc(value.maxHlc);
   assertMaxSeqByDevice(value.maxSeqByDevice);
+}
 
+/** The complete closed legacy shape validator. */
+export function assertManifestV1Shape(
+  value: unknown,
+): asserts value is LedgerPackageManifestV1 {
+  if (!isRecord(value)) {
+    throw new TypeError("manifest must be an object");
+  }
+  assertNoUnknownFields(value, MANIFEST_V1_FIELDS, "manifest");
+  if (value.schemaVersion !== 1) {
+    throw new TypeError("schemaVersion must equal the number 1");
+  }
+  assertCommonManifestShape(value);
   if (!Array.isArray(value.foldExternalState)) {
     throw new TypeError("foldExternalState must be an array");
   }
@@ -200,25 +224,90 @@ export function assertManifestV1Shape(
   }
 }
 
+/** The complete closed active writer/reader shape validator. */
+export function assertManifestV2Shape(
+  value: unknown,
+): asserts value is LedgerPackageManifestV2 {
+  if (!isRecord(value)) {
+    throw new TypeError("manifest must be an object");
+  }
+  assertNoUnknownFields(value, MANIFEST_V2_FIELDS, "manifest");
+  if (value.schemaVersion !== 2) {
+    throw new TypeError("schemaVersion must equal the number 2");
+  }
+  assertCommonManifestShape(value);
+  assertNonNegativeSafeInteger(
+    value.importReceiptCount,
+    "importReceiptCount",
+  );
+  if (
+    !Array.isArray(value.foldExternalState) ||
+    value.foldExternalState.length !== 1 ||
+    value.foldExternalState[0] !== "importReceipts"
+  ) {
+    throw new TypeError(
+      'foldExternalState must equal exactly ["importReceipts"] for schemaVersion 2',
+    );
+  }
+}
+
+/** Dispatches without interpreting fields from a future schema. */
+export function assertLedgerPackageManifestShape(
+  value: unknown,
+): asserts value is LedgerPackageManifest {
+  if (!isRecord(value)) {
+    throw new TypeError("manifest must be an object");
+  }
+  if (value.schemaVersion === 1) {
+    assertManifestV1Shape(value);
+    return;
+  }
+  if (value.schemaVersion === 2) {
+    assertManifestV2Shape(value);
+    return;
+  }
+  if (
+    typeof value.schemaVersion === "number" &&
+    Number.isSafeInteger(value.schemaVersion) &&
+    value.schemaVersion >= 3
+  ) {
+    throw new UnsupportedSchemaVersionError(value.schemaVersion);
+  }
+  throw new TypeError("schemaVersion must equal a supported number (1 or 2)");
+}
+
+export function parseLedgerPackageManifest(
+  manifestJson: string,
+): LedgerPackageManifest {
+  let candidate: unknown;
+  try {
+    candidate = JSON.parse(manifestJson) as unknown;
+  } catch {
+    throw new TypeError("manifest must be valid JSON");
+  }
+  assertLedgerPackageManifestShape(candidate);
+  return candidate;
+}
+
+/** Active writers always produce schemaVersion 2 packages. */
 export function buildManifest(
   input: BuildManifestInput,
-): LedgerPackageManifest {
+): LedgerPackageManifestV2 {
   const candidate = {
     packageKind: "tenjin-ledger",
-    schemaVersion: 1,
+    schemaVersion: 2,
     mode: input.mode,
-    // redaction is not implemented yet, so the ledger generation is always 0.
-    // The field exists so that landing redaction does not change the format.
     generation: 0,
     exportedByDeviceId: input.exportedByDeviceId,
     exportedAt: input.exportedAt,
     eventCount: input.eventCount,
     contextCount: input.contextCount,
+    importReceiptCount: input.importReceiptCount,
     maxSeqByDevice: input.watermark.maxSeqByDevice,
     maxHlc: input.watermark.maxHlc,
-    foldExternalState: [] as const,
-  } satisfies LedgerPackageManifest;
+    foldExternalState: ["importReceipts"] as const,
+  } satisfies LedgerPackageManifestV2;
 
-  assertManifestV1Shape(candidate);
+  assertManifestV2Shape(candidate);
   return candidate;
 }

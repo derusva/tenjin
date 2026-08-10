@@ -20,6 +20,7 @@ export interface RestoreContextImageShape {
 export interface RestoreContextShape {
   readonly hash: string;
   readonly original: string;
+  readonly focus?: string;
   readonly corrected?: string;
   readonly answer?: string;
   readonly image?: RestoreContextImageShape;
@@ -46,9 +47,18 @@ declare const Blob: {
 const CONTEXT_HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const BARE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_CONTEXT_IMAGE_BYTES = 20 * 1024 * 1024;
-const CONTEXT_FIELDS: readonly string[] = [
+const CONTEXT_V1_FIELDS: readonly string[] = [
   "hash",
   "original",
+  "corrected",
+  "answer",
+  "image",
+  "createdAt",
+];
+const CONTEXT_V2_FIELDS: readonly string[] = [
+  "hash",
+  "original",
+  "focus",
   "corrected",
   "answer",
   "image",
@@ -98,7 +108,7 @@ function requireNonEmptyString(
 
 function optionalNonEmptyString(
   value: Record<string, unknown>,
-  field: "corrected" | "answer",
+  field: "focus" | "corrected" | "answer",
 ): string | undefined {
   if (!Object.hasOwn(value, field)) return undefined;
   return requireNonEmptyString(value[field], `context ${field}`);
@@ -239,6 +249,7 @@ async function validateImage(
 export async function validateContexts(
   entries: ContextEntries,
   sha256Hex: Sha256Hex,
+  schemaVersion: 1 | 2 = 1,
 ): Promise<readonly RestoreContextShape[]> {
   const contexts: RestoreContextShape[] = [];
   const entryHashes = [...entries.contextJsonByHash.keys()].sort();
@@ -250,7 +261,11 @@ export async function validateContexts(
       throw new TypeError(`context ${entryHash} metadata entry is missing`);
     }
     const metadata = parseContextMetadata(json, entryHash);
-    assertNoUnknownFields(metadata, CONTEXT_FIELDS, "context");
+    assertNoUnknownFields(
+      metadata,
+      schemaVersion === 1 ? CONTEXT_V1_FIELDS : CONTEXT_V2_FIELDS,
+      "context",
+    );
 
     const hash = metadata.hash;
     if (typeof hash !== "string" || !CONTEXT_HASH_PATTERN.test(hash)) {
@@ -268,6 +283,10 @@ export async function validateContexts(
       metadata.original,
       `context ${entryHash} original`,
     );
+    const focus =
+      schemaVersion === 1
+        ? undefined
+        : optionalNonEmptyString(metadata, "focus");
     const corrected = optionalNonEmptyString(metadata, "corrected");
     const answer = optionalNonEmptyString(metadata, "answer");
     const createdAt = requireCanonicalUtcTimestamp(metadata.createdAt);
@@ -290,6 +309,7 @@ export async function validateContexts(
       strToU8(
         serializeContextHashInput({
           original,
+          ...(focus === undefined ? {} : { focus }),
           ...(corrected === undefined ? {} : { corrected }),
           ...(answer === undefined ? {} : { answer }),
           ...(image === undefined ? {} : { imageSha256: image.sha256 }),
@@ -305,6 +325,7 @@ export async function validateContexts(
     contexts.push({
       hash,
       original,
+      ...(focus === undefined ? {} : { focus }),
       ...(corrected === undefined ? {} : { corrected }),
       ...(answer === undefined ? {} : { answer }),
       ...(image === undefined ? {} : { image }),

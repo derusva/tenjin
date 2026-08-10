@@ -5,7 +5,10 @@ import { canonicalJson } from "./canonicalJson.js";
 import { exportLedgerPackage } from "./exportPackage.js";
 import { buildManifest } from "./manifest.js";
 import { readPackage } from "./readPackage.js";
-import { validateManifest } from "./validateManifest.js";
+import {
+  validateManifest,
+  type ManifestActuals,
+} from "./validateManifest.js";
 import { deriveWatermark } from "./watermark.js";
 
 function event(
@@ -42,6 +45,7 @@ const manifest = buildManifest({
   exportedAt: "2026-08-05T12:00:00.000Z",
   eventCount: events.length,
   contextCount: 2,
+  importReceiptCount: 0,
   watermark: deriveWatermark(events),
 });
 
@@ -49,19 +53,26 @@ function manifestJson(overrides: Record<string, unknown> = {}): string {
   return canonicalJson({ ...manifest, ...overrides });
 }
 
+function actuals(overrides: Partial<ManifestActuals> = {}): ManifestActuals {
+  return {
+    events,
+    contextCount: 2,
+    importReceiptCount: 0,
+    hasImportReceiptsEntry: true,
+    ...overrides,
+  };
+}
+
 describe("validateManifest", () => {
   it("returns a shape-valid manifest whose declarations match package data", () => {
     expect(
-      validateManifest(manifestJson(), { events, contextCount: 2 }),
+      validateManifest(manifestJson(), actuals()),
     ).toEqual(manifest);
   });
 
   it("runs the shared closed-shape validator before cross-checking", () => {
     expect(() =>
-      validateManifest(manifestJson({ futureField: true }), {
-        events,
-        contextCount: 2,
-      }),
+      validateManifest(manifestJson({ futureField: true }), actuals()),
     ).toThrow(/unknown.*futureField/i);
   });
 
@@ -70,11 +81,48 @@ describe("validateManifest", () => {
     ["too many", events.length + 1],
   ])("rejects an eventCount that is %s", (_name, eventCount) => {
     expect(() =>
-      validateManifest(manifestJson({ eventCount }), {
-        events,
-        contextCount: 2,
-      }),
+      validateManifest(manifestJson({ eventCount }), actuals()),
     ).toThrow(/eventCount.*actual/i);
+  });
+
+  it("requires the v2 receipt entry even when the declared count is zero", () => {
+    expect(() =>
+      validateManifest(
+        manifestJson(),
+        actuals({ hasImportReceiptsEntry: false }),
+      ),
+    ).toThrow(/requires import-receipts\.json/i);
+  });
+
+  it("cross-checks importReceiptCount against validated receipts", () => {
+    expect(() =>
+      validateManifest(
+        manifestJson({ importReceiptCount: 1 }),
+        actuals(),
+      ),
+    ).toThrow(/importReceiptCount.*actual/i);
+  });
+
+  it("accepts v1 only without receipt state and rejects an illicit receipt entry", () => {
+    const legacyManifest: Record<string, unknown> = { ...manifest };
+    delete legacyManifest.importReceiptCount;
+    const legacyJson = canonicalJson({
+      ...legacyManifest,
+      schemaVersion: 1,
+      foldExternalState: [],
+    });
+    const legacyActuals = actuals({
+      importReceiptCount: 0,
+      hasImportReceiptsEntry: false,
+    });
+
+    expect(validateManifest(legacyJson, legacyActuals).schemaVersion).toBe(1);
+    expect(() =>
+      validateManifest(
+        legacyJson,
+        { ...legacyActuals, hasImportReceiptsEntry: true },
+      ),
+    ).toThrow(/schemaVersion 1.*must not carry/i);
   });
 
   it.each([
@@ -82,10 +130,7 @@ describe("validateManifest", () => {
     ["too many", 3],
   ])("rejects a contextCount that is %s", (_name, contextCount) => {
     expect(() =>
-      validateManifest(manifestJson({ contextCount }), {
-        events,
-        contextCount: 2,
-      }),
+      validateManifest(manifestJson({ contextCount }), actuals()),
     ).toThrow(/contextCount.*actual/i);
   });
 
@@ -93,7 +138,7 @@ describe("validateManifest", () => {
     expect(() =>
       validateManifest(
         manifestJson({ maxHlc: { wallTime: 30, counter: 2 } }),
-        { events, contextCount: 2 },
+        actuals(),
       ),
     ).toThrow(/maxHlc.*derived/i);
   });
@@ -104,19 +149,16 @@ describe("validateManifest", () => {
     ["wrong value", { "device-a": 4, "device-b": 2 }],
   ])("rejects maxSeqByDevice with %s", (_name, maxSeqByDevice) => {
     expect(() =>
-      validateManifest(manifestJson({ maxSeqByDevice }), {
-        events,
-        contextCount: 2,
-      }),
+      validateManifest(manifestJson({ maxSeqByDevice }), actuals()),
     ).toThrow(/maxSeqByDevice.*derived/i);
   });
 
   it("rejects malformed JSON and non-object JSON", () => {
     expect(() =>
-      validateManifest("{", { events, contextCount: 2 }),
+      validateManifest("{", actuals()),
     ).toThrow(/manifest.*valid JSON/i);
     expect(() =>
-      validateManifest("[]", { events, contextCount: 2 }),
+      validateManifest("[]", actuals()),
     ).toThrow(/manifest.*object/i);
   });
 
@@ -134,6 +176,7 @@ describe("validateManifest", () => {
       exportedAt: "2026-08-05T12:00:00.000Z",
       events: roundTripEvents,
       contexts: [],
+      importReceipts: [],
     });
 
     const read = await readPackage(bytes);
@@ -145,6 +188,8 @@ describe("validateManifest", () => {
     const restoredManifest = validateManifest(read.manifestJson, {
       events: readEvents,
       contextCount: read.contextJsonByHash.size,
+      importReceiptCount: 0,
+      hasImportReceiptsEntry: read.importReceiptsJson !== undefined,
     });
 
     expect(readEvents).toHaveLength(roundTripEvents.length);

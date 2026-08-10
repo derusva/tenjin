@@ -15,7 +15,7 @@
     "pretest": "pnpm --filter @tenjin/core build",
     "test": "vitest run",
     "pretypecheck": "pnpm --filter @tenjin/core build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --project tsconfig.json && tsc --project tsconfig.public-api.json",
     "prebuild": "pnpm --filter @tenjin/core build",
     "build": "tsc --project tsconfig.json"
   },

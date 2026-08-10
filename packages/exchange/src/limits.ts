@@ -7,11 +7,12 @@ export const PACKAGE_LIMITS = {
 
   /**
    * STRUCTURAL, not provisional: without ZIP64 a central directory holds at
-   * most 65,535 entries. Three fixed entries plus two per context gives
-   * 2 * 32_766 + 3 = 65_535 exactly.
+   * most 65,535 entries. Four fixed v2 entries plus up to two per context
+   * means 32,765 contexts is the largest image-bearing package that remains
+   * below that ceiling (2 * 32_765 + 4 = 65_534).
    */
   entries: 65_535,
-  contexts: 32_766,
+  contexts: 32_765,
 
   /**
    * PROVISIONAL SECURITY CEILINGS. Refusal thresholds, nothing more - never

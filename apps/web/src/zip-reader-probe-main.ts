@@ -80,6 +80,7 @@ function buildEmptyPackage(): Uint8Array {
   return exportLedgerPackage({
     events: [],
     contexts: [],
+    importReceipts: [],
     mode: "full-backup",
     exportedByDeviceId: "browser-probe",
     exportedAt: "2026-08-10T00:00:00.000Z",
@@ -96,7 +97,9 @@ async function run(): Promise<BrowserProbeResult> {
     const resources = resourceEntries();
     const externalResources = externalWorkerOrWasmResources(resources);
     const productionReadPackage =
-      parsed.eventsJsonl === "" && parsed.contextJsonByHash.size === 0;
+      parsed.eventsJsonl === "" &&
+      parsed.importReceiptsJson === "[]" &&
+      parsed.contextJsonByHash.size === 0;
     const pass =
       offline &&
       spy.probeCalls === 1 &&
