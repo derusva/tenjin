@@ -20,3 +20,12 @@ export {
   RestoreCommitRecordError,
   type RestoreCommitRecord,
 } from "./restoreCommit.js";
+export {
+  verifyLedgerEquivalence,
+  type EquivalenceFailure,
+  type EquivalenceFailureCode,
+  type EquivalenceReport,
+  type ReviewQueueItem,
+  type ReviewQueueProbe,
+  type VerifyLedgerEquivalenceInput,
+} from "./verifyEquivalence.js";
