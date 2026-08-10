@@ -12,6 +12,17 @@ import {
   type IDBPObjectStore,
 } from "idb";
 
+import {
+  assertRestoreCommitRecord,
+  RESTORE_COMMIT_KEY,
+  type RestoreCommitRecord,
+} from "./restoreCommit.js";
+import {
+  prepareRestoreLedger,
+  type LedgerRestorer,
+  type RestoreLedgerInput,
+} from "./restore.js";
+
 export const CONTEXT_IMAGE_MEDIA_TYPES = [
   "image/jpeg",
   "image/png",
@@ -101,7 +112,10 @@ interface DeviceSequenceRecord {
   readonly seq: number;
 }
 
-type AllocatorRecord = GlobalClockRecord | DeviceSequenceRecord;
+type AllocatorRecord =
+  | GlobalClockRecord
+  | DeviceSequenceRecord
+  | RestoreCommitRecord;
 
 const GLOBAL_CLOCK_KEY = "global-hlc";
 const CONTEXT_IMAGE_MEDIA_TYPE_SET = new Set<string>(
@@ -686,7 +700,7 @@ async function structurallyEqualWithTransactionKeepAlive(
   return result;
 }
 
-class IndexedDBLedgerRepository implements LedgerRepository {
+class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
   readonly #database: IDBPDatabase<LedgerDatabase>;
 
   constructor(database: IDBPDatabase<LedgerDatabase>) {
@@ -990,6 +1004,79 @@ class IndexedDBLedgerRepository implements LedgerRepository {
     }
   }
 
+  async restoreLedger(
+    input: RestoreLedgerInput,
+    newDeviceId: string,
+  ): Promise<void> {
+    const prepared = await prepareRestoreLedger(input, newDeviceId);
+    for (const event of prepared.events) assertValidEvent(event);
+    for (const context of prepared.contexts) {
+      assertValidContext(context);
+      await assertValidContextImageDigest(context);
+    }
+
+    const transaction = this.#database.transaction(
+      ["events", "contexts", "clock"],
+      "readwrite",
+    );
+    try {
+      const eventStore = transaction.objectStore("events");
+      const contextStore = transaction.objectStore("contexts");
+      const clockStore = transaction.objectStore("clock");
+      const counts = await Promise.all([
+        eventStore.count(),
+        contextStore.count(),
+        clockStore.count(),
+      ]);
+      if (counts.some((count) => count !== 0)) {
+        throw new Error("目标库非空，无法执行完整账本恢复");
+      }
+
+      for (const event of prepared.events) {
+        await eventStore.put(event);
+      }
+      for (const context of prepared.contexts) {
+        await contextStore.put(context);
+      }
+      await clockStore.put({
+        key: GLOBAL_CLOCK_KEY,
+        type: "global-hlc",
+        hlc: prepared.globalHlc,
+      });
+      for (const [deviceId, seq] of prepared.maxSeqByDevice) {
+        await clockStore.put({
+          key: deviceSequenceKey(deviceId),
+          type: "device-sequence",
+          deviceId,
+          seq,
+        });
+      }
+      await clockStore.put(prepared.marker);
+      await transaction.done;
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {
+        // The transaction may already have aborted because a request failed.
+      }
+      try {
+        await transaction.done;
+      } catch {
+        // Preserve the operation error rather than the follow-up abort error.
+      }
+      throw error;
+    }
+  }
+
+  async readRestoreCommit(): Promise<RestoreCommitRecord | undefined> {
+    const transaction = this.#database.transaction("clock", "readonly");
+    const marker = await transaction.objectStore("clock").get(RESTORE_COMMIT_KEY);
+    await transaction.done;
+    if (marker === undefined) return undefined;
+    assertRestoreCommitRecord(marker);
+    return marker;
+  }
+
   async readSnapshot(): Promise<LedgerSnapshot> {
     const transaction = this.#database.transaction(
       ["events", "contexts"],
@@ -1022,7 +1109,7 @@ class IndexedDBLedgerRepository implements LedgerRepository {
 
 export async function openLedgerRepository(
   options: OpenLedgerRepositoryOptions = {},
-): Promise<LedgerRepository> {
+): Promise<LedgerRepository & LedgerRestorer> {
   const databaseName = options.dbName ?? "tenjin-ledger";
   let upgradeWasBlocked = false;
   let openedDatabase: IDBPDatabase<LedgerDatabase> | undefined;
