@@ -33,3 +33,4 @@ export {
   validateManifest,
   type ManifestActuals,
 } from "./validateManifest.js";
+export { validateEvents } from "./validateEvents.js";
