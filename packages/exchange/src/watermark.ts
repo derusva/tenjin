@@ -24,18 +24,21 @@ export function compareHlc(
  * the ledger actually holds, and the watermark must only claim held events.
  */
 export function deriveWatermark(events: readonly Event[]): LedgerWatermark {
-  const maxSeqByDevice: Record<string, number> = {};
+  const maxSeqEntries = new Map<string, number>();
   let maxHlc: HybridLogicalClock = { wallTime: 0, counter: 0 };
 
   for (const event of events) {
-    const current = maxSeqByDevice[event.deviceId];
+    const current = maxSeqEntries.get(event.deviceId);
     if (current === undefined || event.seq > current) {
-      maxSeqByDevice[event.deviceId] = event.seq;
+      maxSeqEntries.set(event.deviceId, event.seq);
     }
     if (compareHlc(event.hlc, maxHlc) > 0) {
       maxHlc = { wallTime: event.hlc.wallTime, counter: event.hlc.counter };
     }
   }
 
-  return { maxSeqByDevice, maxHlc };
+  return {
+    maxSeqByDevice: Object.fromEntries(maxSeqEntries),
+    maxHlc,
+  };
 }

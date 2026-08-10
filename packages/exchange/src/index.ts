@@ -29,3 +29,7 @@ export {
   type RestoreContextShape,
   type Sha256Hex,
 } from "./validateContexts.js";
+export {
+  validateManifest,
+  type ManifestActuals,
+} from "./validateManifest.js";

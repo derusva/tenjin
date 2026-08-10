@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Event } from "@tenjin/core";
+import { canonicalJson } from "./canonicalJson.js";
 import { compareHlc, deriveWatermark } from "./watermark.js";
 
 function stub(deviceId: string, seq: number, wallTime: number, counter = 0): Event {
@@ -61,5 +62,43 @@ describe("deriveWatermark", () => {
     expect(Object.keys(deriveWatermark([stub("device-a", 1, 1)]).maxSeqByDevice)).toEqual([
       "device-a",
     ]);
+  });
+
+  it("preserves prototype-named device IDs as own enumerable keys", () => {
+    const maxSeqByDevice = deriveWatermark([
+      stub("device-a", 2, 1),
+      stub("__proto__", 3, 2),
+      stub("constructor", 4, 3),
+      stub("toString", 5, 4),
+      stub("__proto__", 7, 5),
+    ]).maxSeqByDevice;
+
+    expect(Object.keys(maxSeqByDevice)).toEqual([
+      "device-a",
+      "__proto__",
+      "constructor",
+      "toString",
+    ]);
+    expect(Object.hasOwn(maxSeqByDevice, "__proto__")).toBe(true);
+    expect(Object.hasOwn(maxSeqByDevice, "constructor")).toBe(true);
+    expect(Object.hasOwn(maxSeqByDevice, "toString")).toBe(true);
+    expect(maxSeqByDevice["__proto__"]).toBe(7);
+    expect(maxSeqByDevice.constructor).toBe(4);
+    expect(maxSeqByDevice.toString).toBe(5);
+
+    const roundTripped = JSON.parse(canonicalJson(maxSeqByDevice)) as Record<
+      string,
+      number
+    >;
+    expect(Object.keys(roundTripped)).toEqual([
+      "__proto__",
+      "constructor",
+      "device-a",
+      "toString",
+    ]);
+    expect(Object.hasOwn(roundTripped, "__proto__")).toBe(true);
+    expect(roundTripped["__proto__"]).toBe(7);
+    expect(roundTripped.constructor).toBe(4);
+    expect(roundTripped.toString).toBe(5);
   });
 });
