@@ -307,11 +307,11 @@ const FIXTURES = {
   zip64ArchiveSentinels: zip64ArchiveSentinelFixture(),
   magicBytesInPayloadAndComment: magicBytesFixture(),
   actualEntryOverflow: storedZip([
-    { name: "large", data: new Uint8Array(33), declaredSize: 32 },
+    { name: "events.jsonl", data: new Uint8Array(33), declaredSize: 32 },
   ]),
   actualPackageOverflow: storedZip([
-    { name: "first", data: new Uint8Array(20) },
-    { name: "last", data: new Uint8Array(21), declaredSize: 20 },
+    { name: "manifest.json", data: new Uint8Array(20) },
+    { name: "events.jsonl", data: new Uint8Array(21), declaredSize: 20 },
   ]),
 } as const;
 

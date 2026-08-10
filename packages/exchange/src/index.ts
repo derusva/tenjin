@@ -5,6 +5,13 @@ export * from "./manifest.js";
 export * from "./exportPackage.js";
 export * from "./inspectPackage.js";
 export * from "./limits.js";
+export { decodeUtf8Strict } from "./decodeUtf8.js";
+export {
+  readPackage,
+  ReadPackageError,
+  type ReadLedgerPackage,
+  type ReadPackageErrorCode,
+} from "./readPackage.js";
 export {
   runZipRuntimeProbe,
   ZIP_ENTRY_OPTIONS,

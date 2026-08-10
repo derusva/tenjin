@@ -38,6 +38,7 @@ export type ZipRuntimeErrorCode =
   | "ZIP_MULTI_DISK_UNSUPPORTED"
   | "ZIP64_ENTRY_UNSUPPORTED"
   | "ZIP64_ARCHIVE_UNSUPPORTED"
+  | "ZIP_DUPLICATE_ENTRY"
   | "PACKAGE_COMPRESSED_LIMIT"
   | "PACKAGE_DECLARED_LIMIT"
   | "PACKAGE_OUTPUT_LIMIT"
@@ -108,6 +109,11 @@ export interface ZipRuntimeReadResult {
   readonly entries: ReadonlyMap<string, Uint8Array>;
   readonly entryCount: number;
   readonly totalOutputBytes: number;
+}
+
+export interface ZipRuntimeReadPolicy {
+  readonly validateEntry?: (entry: RuntimeZipEntry) => void;
+  readonly entryOutputLimit?: (entry: RuntimeZipEntry) => number;
 }
 
 function defaultReaderFactory(
@@ -267,6 +273,7 @@ class CountingWriter extends Writer<Uint8Array> {
 }
 
 const NO_OBSERVATION: ZipRuntimeObservation = Object.freeze({});
+const NO_POLICY: ZipRuntimeReadPolicy = Object.freeze({});
 
 export async function readZipEntriesWithRuntime(
   bytes: Uint8Array,
@@ -278,6 +285,7 @@ export async function readZipEntriesWithRuntime(
     closeCalls: number;
     signals: RuntimeCancellationFlag[];
   } | ZipRuntimeObservation = NO_OBSERVATION,
+  policy: ZipRuntimeReadPolicy = NO_POLICY,
 ): Promise<ZipRuntimeReadResult> {
   if (bytes.byteLength > limits.compressedBytes) {
     throw new ZipRuntimeError("PACKAGE_COMPRESSED_LIMIT");
@@ -296,15 +304,29 @@ export async function readZipEntriesWithRuntime(
   let operationError: unknown;
   let result: ZipRuntimeReadResult | undefined;
   try {
-    const entries: RuntimeZipEntry[] = [];
+    const entries: Array<{
+      readonly entry: RuntimeZipEntry;
+      readonly outputLimit: number;
+    }> = [];
+    const seenNames = new Set<string>();
     let declaredTotal = 0;
     for await (const entry of reader.getEntriesGenerator()) {
       validateEntry(entry);
-      entries.push(entry);
+      policy.validateEntry?.(entry);
+      if (seenNames.has(entry.filename)) {
+        throw new ZipRuntimeError("ZIP_DUPLICATE_ENTRY");
+      }
+      seenNames.add(entry.filename);
+      const outputLimit =
+        policy.entryOutputLimit?.(entry) ?? limits.entryOutputBytes;
+      if (!Number.isSafeInteger(outputLimit) || outputLimit < 0) {
+        throw new TypeError("entry output limit must be a non-negative safe integer");
+      }
+      entries.push({ entry, outputLimit });
       declaredTotal += entry.uncompressedSize;
       if (
         entries.length > limits.entries ||
-        entry.uncompressedSize > limits.entryOutputBytes ||
+        entry.uncompressedSize > outputLimit ||
         declaredTotal > limits.totalOutputBytes
       ) {
         throw new ZipRuntimeError("PACKAGE_DECLARED_LIMIT");
@@ -313,13 +335,13 @@ export async function readZipEntriesWithRuntime(
 
     const output = new Map<string, Uint8Array>();
     const total = { value: 0, limitExceeded: false };
-    for (const entry of entries) {
+    for (const { entry, outputLimit } of entries) {
       if (entry.directory) continue;
       const controller = new AbortController();
       mutable.signals?.push(controller.signal);
       const writer = new CountingWriter(
         controller,
-        limits.entryOutputBytes,
+        outputLimit,
         limits.totalOutputBytes,
         total,
       );
