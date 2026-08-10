@@ -392,7 +392,7 @@ describe("App", () => {
 
     try {
       await screen.findByRole("heading", { name: "pending review item" });
-      await user.click(screen.getByRole("button", { name: "复习 5 条" }));
+      await user.click(screen.getByRole("button", { name: "复习 2 分钟" }));
       await user.click(screen.getByRole("button", { name: "揭示" }));
       await user.click(screen.getByRole("button", { name: "不记得" }));
       await waitFor(() => expect(appendEventCalls).toBe(1));
@@ -719,7 +719,9 @@ describe("App", () => {
       ).toBeInTheDocument();
       expect(review).toBeEnabled();
       await user.click(review);
-      expect(await screen.findByText("1 / 1")).toBeInTheDocument();
+      expect(
+        await screen.findByRole("heading", { name: "loaded item" }),
+      ).toBeInTheDocument();
       expect(screen.getByText("loaded item")).toBeInTheDocument();
     } finally {
       view.unmount();
@@ -774,8 +776,10 @@ describe("App", () => {
       expect(JSON.stringify(snapshot.events)).not.toContain("話すです");
       expect(JSON.stringify(snapshot.events)).toContain("話します");
 
-      await user.click(screen.getByRole("button", { name: "复习 5 条" }));
-      expect(await screen.findByText("1 / 1")).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "复习 2 分钟" }));
+      expect(
+        await screen.findByRole("heading", { name: "話すです" }),
+      ).toBeInTheDocument();
       expect(screen.getByText("P 通道")).toBeInTheDocument();
       await user.click(screen.getByRole("button", { name: "揭示" }));
       await user.click(screen.getByRole("button", { name: "不记得" }));
@@ -794,7 +798,9 @@ describe("App", () => {
       });
 
       await user.click(within(navigation).getByRole("button", { name: "复习" }));
-      expect(await screen.findByText("1 / 1")).toBeInTheDocument();
+      expect(
+        await screen.findByRole("heading", { name: "話すです" }),
+      ).toBeInTheDocument();
       await user.click(screen.getByRole("button", { name: "揭示" }));
       expect(screen.getByText("最近一次没有想起来")).toBeInTheDocument();
 
@@ -905,7 +911,7 @@ describe("App", () => {
         "[object Blob]",
       );
 
-      await user.click(screen.getByRole("button", { name: "复习 5 条" }));
+      await user.click(screen.getByRole("button", { name: "复习 2 分钟" }));
       expect(
         await screen.findByRole("img", {
           name: "复习图片：lesson.png",

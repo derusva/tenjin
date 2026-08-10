@@ -113,6 +113,7 @@ describe("buildReviewQueue", () => {
           contexts: [
             {
               ...context(1, "一期一会"),
+              focus: "一期一会",
               answer: "一生只有一次的相遇",
               image,
             },
@@ -126,10 +127,37 @@ describe("buildReviewQueue", () => {
         itemId: "item-1",
         channel: "R",
         prompt: "一期一会",
+        focus: "一期一会",
         promptImage: image,
         reveal: {
           label: "查到的意思 / 解释",
           text: "一生只有一次的相遇",
+        },
+      }),
+    ]);
+  });
+
+  it("keeps a focused Coach item tied to its full source sentence", () => {
+    const events = captureEvents(7, "lookup", "R");
+    const snapshot: LedgerSnapshot = {
+      events,
+      contexts: [
+        {
+          ...context(7, "大丈夫、手は打ったから。"),
+          focus: "手を打つ",
+          answer: "采取措施",
+        },
+      ],
+    };
+
+    expect(buildReviewQueue(deriveLedger(events), snapshot, 5)).toEqual([
+      expect.objectContaining({
+        itemId: "item-7",
+        prompt: "大丈夫、手は打ったから。",
+        focus: "手を打つ",
+        reveal: {
+          label: "查到的意思 / 解释",
+          text: "采取措施",
         },
       }),
     ]);

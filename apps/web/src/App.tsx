@@ -283,6 +283,7 @@ export function App({
       <ReviewSession
         key={reviewSessionKey}
         items={reviewItems}
+        durationMs={120_000}
         onAnswer={answerReview}
         onExit={() => openView("record")}
       />
@@ -327,7 +328,7 @@ export function App({
             onClick={() => openView("review")}
           >
             <ReviewIcon aria-hidden="true" size={24} />
-            <span>复习 5 条</span>
+            <span>复习 2 分钟</span>
           </button>
           <button
             type="button"

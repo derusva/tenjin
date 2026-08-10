@@ -12,6 +12,8 @@ import type { ReviewPresentation } from "./reviewQueue.js";
 
 export interface ReviewSessionProps {
   readonly items: readonly ReviewPresentation[];
+  readonly durationMs?: number;
+  readonly now?: () => number;
   readonly onAnswer: (
     itemId: string,
     channel: LearningChannel,
@@ -28,6 +30,8 @@ const REASON_COPY: Readonly<Record<ReviewPresentation["reason"], string>> = {
 
 export function ReviewSession({
   items,
+  durationMs,
+  now = Date.now,
   onAnswer,
   onExit,
 }: ReviewSessionProps) {
@@ -39,6 +43,10 @@ export function ReviewSession({
   const firstAssessmentRef = useRef<HTMLButtonElement>(null);
   const nextContentRef = useRef<HTMLHeadingElement>(null);
   const shouldFocusNextContentRef = useRef(false);
+  const startedAtRef = useRef<number | undefined>(undefined);
+  if (startedAtRef.current === undefined) {
+    startedAtRef.current = now();
+  }
   const current = items[currentIndex];
 
   useEffect(() => {
@@ -99,12 +107,18 @@ export function ReviewSession({
     try {
       await onAnswer(itemToReview.itemId, itemToReview.channel, result);
       shouldFocusNextContentRef.current = true;
+      const timeExpired =
+        durationMs !== undefined &&
+        now() - startedAtRef.current! >= durationMs;
+      const hasNextItem = currentIndex + 1 < items.length && !timeExpired;
       setAnnouncement(
-        currentIndex + 1 < items.length
+        hasNextItem
           ? "回答已保存，下一题已载入"
           : "回答已保存",
       );
-      setCurrentIndex((index) => index + 1);
+      setCurrentIndex((index) =>
+        timeExpired ? items.length : index + 1,
+      );
       setRevealed(false);
     } catch (error) {
       const detail = error instanceof Error ? error.message : "未知错误";
@@ -123,9 +137,14 @@ export function ReviewSession({
       {liveStatus}
       <header className="review-header">
         <p className="wordmark">Tenjin</p>
-        <p className="review-progress">
-          {currentIndex + 1} / {items.length}
-        </p>
+        <button
+          className="secondary-action"
+          type="button"
+          disabled={saving}
+          onClick={onExit}
+        >
+          结束本次复习
+        </button>
       </header>
       <article className="review-item">
         {current.promptImage === undefined ? null : (
@@ -141,6 +160,9 @@ export function ReviewSession({
         <h1 id="review-item-title" ref={nextContentRef} tabIndex={-1}>
           {current.prompt}
         </h1>
+        {current.focus === undefined ? null : (
+          <p className="review-focus">学习点：{current.focus}</p>
+        )}
         <p className="review-channel">{current.channel} 通道</p>
 
         {revealed ? (

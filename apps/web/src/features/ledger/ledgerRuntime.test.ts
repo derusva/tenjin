@@ -63,6 +63,7 @@ function runtimeHarness(options: {
 } = {}) {
   const dates = [...(options.dates ?? [LATER])];
   const uuids = ["capture-uuid", "item-uuid", "next-uuid"];
+  let fallbackUuid = 0;
   const digestInputs: string[] = [];
   const digests = [...(options.digests ?? ["A1B2C3"])];
   let nowCallCount = 0;
@@ -82,7 +83,7 @@ function runtimeHarness(options: {
       nowCallCount += 1;
       return new Date(dates.shift() ?? LATER);
     },
-    randomUUID: () => uuids.shift() ?? "fallback-uuid",
+    randomUUID: () => uuids.shift() ?? `fallback-uuid-${++fallbackUuid}`,
     digest: async (text) => {
       digestInputs.push(text);
       return digests.shift() ?? "d00d";
@@ -284,6 +285,104 @@ describe("createLedgerRuntime", () => {
     expect(nowCalls()).toBe(0);
   });
 
+  it.each([1, 2, 3])(
+    "builds a %i-item lookup batch from one reservation and one timestamp",
+    async (commandCount) => {
+      const { allocator, digestInputs, nowCalls, runtime } = runtimeHarness({
+        dates: [LATER, EARLIER],
+      });
+      const commands = Array.from({ length: commandCount }, (_value, index) => ({
+        type: "lookup" as const,
+        original: `来源句 ${index + 1}`,
+        focus: `学习点 ${index + 1}`,
+        answer: `解释 ${index + 1}`,
+      }));
+
+      const transactions = await runtime.createCaptureBatch(commands);
+
+      expect(allocator.calls).toEqual([
+        {
+          deviceId: "device-local",
+          physicalTime: Date.parse(LATER),
+          count: commandCount * 3,
+        },
+      ]);
+      expect(nowCalls()).toBe(1);
+      expect(transactions).toHaveLength(commandCount);
+      expect(transactions.flatMap(({ events }) => events)).toHaveLength(
+        commandCount * 3,
+      );
+      expect(
+        transactions.flatMap(({ events }) =>
+          events.map(({ occurredAt }) => occurredAt),
+        ),
+      ).toEqual(Array.from({ length: commandCount * 3 }, () => LATER));
+      expect(
+        transactions.map(({ events }) =>
+          events.find((event) => event.kind === "item_created"),
+        ),
+      ).toEqual(
+        commands.map((command) =>
+          expect.objectContaining({
+            payload: expect.objectContaining({
+              display: command.focus,
+              identityKey: `focus:${command.focus}`,
+            }),
+          }),
+        ),
+      );
+      expect(digestInputs).toEqual(
+        commands.map((command) => JSON.stringify({
+          original: command.original,
+          focus: command.focus,
+          answer: command.answer,
+        })),
+      );
+    },
+  );
+
+  it("validates every lookup command before time, reservation, or hashing", async () => {
+    const { allocator, digestInputs, nowCalls, runtime } = runtimeHarness();
+
+    await expect(
+      runtime.createCaptureBatch([
+        {
+          type: "lookup",
+          original: "来源句",
+          focus: "学习点",
+          answer: "解释",
+        },
+        {
+          type: "lookup",
+          original: "另一句",
+          focus: " \n ",
+          answer: "解释",
+        },
+      ]),
+    ).rejects.toThrow("focus");
+
+    expect(nowCalls()).toBe(0);
+    expect(allocator.calls).toEqual([]);
+    expect(digestInputs).toEqual([]);
+  });
+
+  it.each([0, 4])("rejects a %i-item batch before side effects", async (size) => {
+    const { allocator, digestInputs, nowCalls, runtime } = runtimeHarness();
+    const commands = Array.from({ length: size }, (_value, index) => ({
+      type: "lookup" as const,
+      original: `来源句 ${index + 1}`,
+      focus: `学习点 ${index + 1}`,
+      answer: `解释 ${index + 1}`,
+    }));
+
+    await expect(runtime.createCaptureBatch(commands)).rejects.toThrow(
+      "between 1 and 3",
+    );
+    expect(nowCalls()).toBe(0);
+    expect(allocator.calls).toEqual([]);
+    expect(digestInputs).toEqual([]);
+  });
+
   it("keeps physical time scoped to each overlapping capture", async () => {
     const resolutions = new Map<string, (digest: string) => void>();
     const dates = [new Date(EARLIER), new Date(LATER)];
@@ -407,6 +506,65 @@ describe("createLedgerRuntime", () => {
       payload: { reason: "undo" },
     });
   });
+
+  it("creates one reserved discard range for a Coach import batch", async () => {
+    const { allocator, nowCalls, runtime } = runtimeHarness();
+
+    const events = await runtime.createDiscardBatch([
+      "capture-a",
+      "capture-b",
+      "capture-c",
+    ]);
+
+    expect(nowCalls()).toBe(1);
+    expect(allocator.calls).toEqual([
+      {
+        deviceId: "device-local",
+        physicalTime: Date.parse(LATER),
+        count: 3,
+      },
+    ]);
+    expect(
+      events.map(({ eventId, captureId, occurredAt }) => ({
+        eventId,
+        captureId,
+        occurredAt,
+      })),
+    ).toEqual([
+      {
+        eventId: "device-local:1",
+        captureId: "capture-a",
+        occurredAt: LATER,
+      },
+      {
+        eventId: "device-local:2",
+        captureId: "capture-b",
+        occurredAt: LATER,
+      },
+      {
+        eventId: "device-local:3",
+        captureId: "capture-c",
+        occurredAt: LATER,
+      },
+    ]);
+  });
+
+  it.each([
+    [[], "between 1 and 3"],
+    [["capture-a", "capture-a"], "repeat"],
+    [[" capture-a"], "canonical"],
+  ] as const)(
+    "rejects an invalid discard batch before side effects",
+    async (captureIds, expectedMessage) => {
+      const { allocator, nowCalls, runtime } = runtimeHarness();
+
+      await expect(runtime.createDiscardBatch(captureIds)).rejects.toThrow(
+        expectedMessage,
+      );
+      expect(nowCalls()).toBe(0);
+      expect(allocator.calls).toEqual([]);
+    },
+  );
 
   it("does not emit an event when coordinate reservation fails", async () => {
     const allocator = createAllocator({

@@ -2,7 +2,7 @@ import type { ItemView, ReviewItem } from "@tenjin/core";
 import type { ContextImageRecord } from "@tenjin/storage-indexeddb";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ReviewSession } from "./ReviewSession.js";
 import type { ReviewPresentation, ReviewReveal } from "./reviewQueue.js";
@@ -29,6 +29,7 @@ function makeReviewItem(
   reason: ReviewItem["reason"] = "unstable",
   presentation: {
     readonly prompt?: string;
+    readonly focus?: string;
     readonly promptImage?: ContextImageRecord;
     readonly reveal?: ReviewReveal;
   } = {},
@@ -39,6 +40,7 @@ function makeReviewItem(
     reason,
     item: makeItem(itemId, display),
     prompt: presentation.prompt ?? display,
+    ...(presentation.focus === undefined ? {} : { focus: presentation.focus }),
     ...(presentation.promptImage === undefined
       ? {}
       : { promptImage: presentation.promptImage }),
@@ -68,11 +70,12 @@ describe("ReviewSession", () => {
       <ReviewSession
         items={[
           makeReviewItem("item-1", "一期一会", "unstable", {
-            prompt: "一期一会",
+            prompt: "大丈夫、手は打ったから。",
+            focus: "手を打つ",
             promptImage: image,
             reveal: {
               label: "查到的意思 / 解释",
-              text: "一生只有一次的相遇",
+              text: "采取措施",
             },
           }),
         ]}
@@ -84,12 +87,16 @@ describe("ReviewSession", () => {
     expect(
       screen.getByRole("img", { name: "复习图片：lookup.png" }),
     ).toHaveClass("review-prompt-thumbnail");
-    expect(screen.queryByText("一生只有一次的相遇")).not.toBeInTheDocument();
+    expect(screen.getByText("学习点：手を打つ")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "大丈夫、手は打ったから。" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("采取措施")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "揭示" }));
 
     expect(screen.getByText("查到的意思 / 解释")).toBeInTheDocument();
-    expect(screen.getByText("一生只有一次的相遇")).toBeInTheDocument();
+    expect(screen.getByText("采取措施")).toBeInTheDocument();
   });
 
   it("shows the original P prompt and keeps the correction hidden until reveal", async () => {
@@ -128,7 +135,6 @@ describe("ReviewSession", () => {
       />,
     );
 
-    expect(screen.getByText("1 / 1")).toBeInTheDocument();
     expect(screen.getByText("天神")).toBeInTheDocument();
     expect(screen.getByText("R 通道")).toBeInTheDocument();
     expect(screen.queryByText("暂无笔记")).not.toBeInTheDocument();
@@ -234,7 +240,6 @@ describe("ReviewSession", () => {
       await deferred.promise;
     });
 
-    expect(screen.getByText("2 / 2")).toBeInTheDocument();
     expect(screen.getByText("神社")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "揭示" })).toBeEnabled();
     expect(screen.queryByText("暂无笔记")).not.toBeInTheDocument();
@@ -379,5 +384,75 @@ describe("ReviewSession", () => {
     expect(screen.getByText("暂时没有可复习的内容")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "返回记录" }));
     expect(exited).toBe(true);
+  });
+
+  it("lets the user end from the first card without writing a synthetic answer", async () => {
+    const user = userEvent.setup();
+    const onAnswer = vi.fn(async () => undefined);
+    const onExit = vi.fn();
+    render(
+      <ReviewSession
+        items={[makeReviewItem("item-1", "天神")]}
+        onAnswer={onAnswer}
+        onExit={onExit}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "结束本次复习" }));
+
+    expect(onExit).toHaveBeenCalledTimes(1);
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it("does not interrupt a visible card when two minutes expire", async () => {
+    const user = userEvent.setup();
+    let time = 0;
+    render(
+      <ReviewSession
+        items={[
+          makeReviewItem("item-1", "天神"),
+          makeReviewItem("item-2", "神社"),
+        ]}
+        durationMs={120_000}
+        now={() => time}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    time = 120_001;
+    expect(screen.getByRole("heading", { name: "天神" })).toBeInTheDocument();
+    expect(screen.queryByText("本次复习完成")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+    await user.click(screen.getByRole("button", { name: "记得" }));
+
+    expect(screen.getByText("本次复习完成")).toBeInTheDocument();
+    expect(screen.queryByText("神社")).not.toBeInTheDocument();
+  });
+
+  it("continues before the time budget and never shows a remaining-card debt", async () => {
+    const user = userEvent.setup();
+    let time = 0;
+    render(
+      <ReviewSession
+        items={[
+          makeReviewItem("item-1", "天神"),
+          makeReviewItem("item-2", "神社"),
+        ]}
+        durationMs={120_000}
+        now={() => time}
+        onAnswer={async () => undefined}
+        onExit={() => undefined}
+      />,
+    );
+
+    time = 119_999;
+    await user.click(screen.getByRole("button", { name: "揭示" }));
+    await user.click(screen.getByRole("button", { name: "记得" }));
+
+    expect(screen.getByRole("heading", { name: "神社" })).toBeInTheDocument();
+    expect(screen.queryByText(/还剩\s*\d+\s*条/u)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+\s*\/\s*\d+/u)).not.toBeInTheDocument();
   });
 });

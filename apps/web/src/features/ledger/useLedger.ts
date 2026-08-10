@@ -5,6 +5,8 @@ import {
   type LearningChannel,
 } from "@tenjin/core";
 import type {
+  CoachImportRepository,
+  ContextImageRecord,
   ContextRecord,
   LedgerRepository,
   LedgerSnapshot,
@@ -36,8 +38,30 @@ export interface SaveCaptureResult {
   readonly contextHash: string;
 }
 
+export interface CoachImportItemInput {
+  readonly focus: string;
+  readonly sourceExcerpt: string;
+  readonly answer: string;
+  readonly image?: ContextImageRecord;
+}
+
+export interface ImportCoachBatchInput {
+  readonly digest: `sha256:${string}`;
+  readonly items: readonly CoachImportItemInput[];
+}
+
+export type ImportCoachBatchResult =
+  | {
+      readonly status: "imported";
+      readonly captures: readonly SaveCaptureResult[];
+    }
+  | {
+      readonly status: "already-imported";
+      readonly captures: readonly [];
+    };
+
 export interface UseLedgerOptions {
-  readonly repository: LedgerRepository;
+  readonly repository: LedgerRepository & Partial<CoachImportRepository>;
   readonly runtime: LedgerRuntime;
 }
 
@@ -50,12 +74,16 @@ export interface UseLedgerResult {
   readonly recentEntries: readonly RecentEntry[];
   retryRead(): Promise<void>;
   saveCapture(command: CaptureCommand): Promise<SaveCaptureResult>;
+  importCoachBatch(
+    input: ImportCoachBatchInput,
+  ): Promise<ImportCoachBatchResult>;
   answerReview(
     itemId: string,
     channel: LearningChannel,
     result: VerificationResult,
   ): Promise<void>;
   discardCapture(captureId: string, contextHash: string): Promise<void>;
+  discardCaptureBatch(targets: readonly SaveCaptureResult[]): Promise<void>;
 }
 
 const EMPTY_SNAPSHOT: LedgerSnapshot = { events: [], contexts: [] };
@@ -199,6 +227,58 @@ export function useLedger({
     };
   }
 
+  async function importCoachBatch(
+    input: ImportCoachBatchInput,
+  ): Promise<ImportCoachBatchResult> {
+    if (repository.appendImportedCaptureBatch === undefined) {
+      throw new Error("当前账本不支持 Coach 批量导入");
+    }
+    if (repository.hasImportReceipt === undefined) {
+      throw new Error("当前账本不支持 Coach 导入去重");
+    }
+    if (await repository.hasImportReceipt(input.digest)) {
+      return { status: "already-imported", captures: [] };
+    }
+    const transactions = await runtime.createCaptureBatch(
+      input.items.map((item) => ({
+        type: "lookup",
+        original: item.sourceExcerpt,
+        focus: item.focus,
+        answer: item.answer,
+        ...(item.image === undefined ? {} : { image: item.image }),
+      })),
+    );
+    const captures = transactions.map((transaction): SaveCaptureResult => {
+      const capture = transaction.events.find(
+        (event) => event.kind === "capture_created",
+      );
+      if (capture === undefined) {
+        throw new Error("capture transaction is missing capture_created");
+      }
+      return {
+        captureId: capture.captureId,
+        contextHash: capture.contextHash,
+      };
+    });
+    const importedAt = transactions[0]?.context.createdAt;
+    if (importedAt === undefined) {
+      throw new Error("Coach import batch did not create any captures");
+    }
+    const status = await repository.appendImportedCaptureBatch(
+      transactions.map(({ events, context }) => ({ events, context })),
+      {
+        digest: input.digest,
+        importedAt,
+        captureIds: captures.map(({ captureId }) => captureId),
+      },
+    );
+    if (status === "already-imported") {
+      return { status, captures: [] };
+    }
+    await refresh();
+    return { status, captures };
+  }
+
   async function answerReview(
     itemId: string,
     channel: LearningChannel,
@@ -218,17 +298,37 @@ export function useLedger({
     await refresh();
   }
 
+  async function discardCaptureBatch(
+    targets: readonly SaveCaptureResult[],
+  ): Promise<void> {
+    if (repository.appendDiscardBatch === undefined) {
+      throw new Error("当前账本不支持批量撤销");
+    }
+    const events = await runtime.createDiscardBatch(
+      targets.map(({ captureId }) => captureId),
+    );
+    await repository.appendDiscardBatch(
+      events.map((event, index) => ({
+        event,
+        contextHash: targets[index]!.contextHash,
+      })),
+    );
+    await refresh();
+  }
+
   const view = deriveLedger(snapshot.events);
   return {
     status,
     error,
     view,
     snapshot,
-    reviewItems: buildReviewQueue(view, snapshot, 5),
+    reviewItems: buildReviewQueue(view, snapshot, view.items.length * 3),
     recentEntries: selectRecentEntries(snapshot),
     retryRead,
     saveCapture,
+    importCoachBatch,
     answerReview,
     discardCapture,
+    discardCaptureBatch,
   };
 }

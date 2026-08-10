@@ -19,12 +19,14 @@ export interface ReviewReveal {
 
 export interface ReviewPresentation extends ReviewItem {
   readonly prompt: string;
+  readonly focus?: string;
   readonly promptImage?: ContextImageRecord;
   readonly reveal: ReviewReveal | undefined;
 }
 
 interface ReviewMaterial {
   readonly prompt: string;
+  readonly focus?: string;
   readonly promptImage?: ContextImageRecord;
   readonly reveal: ReviewReveal | undefined;
 }
@@ -126,6 +128,7 @@ function collectReviewMaterials(
     ) {
       addMaterial(event.itemId, "R", {
         prompt: context.original,
+        ...(context.focus === undefined ? {} : { focus: context.focus }),
         ...(context.image === undefined
           ? {}
           : { promptImage: context.image }),
@@ -211,6 +214,9 @@ export function buildReviewQueue(
             {
               ...reviewItem,
               prompt: material.prompt,
+              ...(material.focus === undefined
+                ? {}
+                : { focus: material.focus }),
               ...(material.promptImage === undefined
                 ? {}
                 : { promptImage: material.promptImage }),
