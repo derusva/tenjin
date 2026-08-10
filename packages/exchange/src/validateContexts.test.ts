@@ -264,6 +264,23 @@ describe("validateContexts", () => {
     },
   );
 
+  it.each([
+    ["one-byte minimum", 1],
+    ["exact 20 MiB maximum", 20 * 1024 * 1024],
+  ])("accepts the %s image boundary", async (_name, byteLength) => {
+    const fixture = await contextFixture({
+      withImage: true,
+      bytes: new Uint8Array(byteLength),
+    });
+
+    const contexts = await validateContexts(
+      entriesFor(fixture),
+      fakeSha256Hex,
+    );
+    expect(contexts[0]?.image?.byteLength).toBe(byteLength);
+    expect(contexts[0]?.image?.bytes.byteLength).toBe(byteLength);
+  });
+
   it("rejects an unsupported image mediaType", async () => {
     const fixture = await contextFixture({ withImage: true });
     const image = {

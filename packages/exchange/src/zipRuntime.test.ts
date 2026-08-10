@@ -605,6 +605,57 @@ describe("T0 G3 - compressed, declared, and actual-output limits", () => {
     expect(seen.signals[1]?.aborted).toBe(true);
   });
 
+  it("does not double-count current-entry chunks included in worker outputSize", async () => {
+    const seen = observation();
+    const vendorError = Object.assign(new Error("Invalid uncompressed size"), {
+      outputSize: 20,
+    });
+    const writingEntry = (
+      filename: string,
+      declaredSize: number,
+      acceptedSize: number,
+      error?: Error,
+    ): RuntimeZipEntry => ({
+      filename,
+      directory: false,
+      encrypted: false,
+      compressionMethod: 8,
+      diskNumberStart: 0,
+      zip64: false,
+      compressedSize: 1,
+      uncompressedSize: declaredSize,
+      async getData(writer) {
+        const target = writer as {
+          init(): Promise<void>;
+          writeUint8Array(bytes: Uint8Array): Promise<void>;
+          getData(): Promise<Uint8Array>;
+        };
+        await target.init();
+        await target.writeUint8Array(new Uint8Array(acceptedSize));
+        if (error !== undefined) throw error;
+        return target.getData();
+      },
+    });
+    const workerFactory: ZipReaderFactory = () => ({
+      async *getEntriesGenerator() {
+        yield writingEntry("manifest.json", 10, 10);
+        yield writingEntry("events.jsonl", 20, 5, vendorError);
+        return true;
+      },
+      close: () => Promise.resolve(),
+    });
+
+    await expect(
+      readZipEntriesWithRuntime(
+        new Uint8Array([1]),
+        { ...SMALL_LIMITS, totalOutputBytes: 30 },
+        workerFactory,
+        seen,
+      ),
+    ).rejects.toBe(vendorError);
+    expect(seen.signals[1]?.aborted).toBe(false);
+  });
+
   it("uses actual chunks, aborts, closes, and preserves limit priority", async () => {
     const entryLocal = inflateLocalEntries(ZIP_PROBE_FIXTURES.actualEntryOverflow);
     expect(entryLocal).toMatchObject([
