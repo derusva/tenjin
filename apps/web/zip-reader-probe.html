@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tenjin ZIP reader probe</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 56rem; margin: 2rem auto; padding: 0 1rem; }
+      button { font: inherit; margin-right: .5rem; padding: .65rem 1rem; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #111; color: #eee; padding: 1rem; }
+      [data-state="PASS"] { color: #087f23; }
+      [data-state="FAIL"] { color: #b00020; }
+    </style>
+    <script>
+      (() => {
+        const state = {
+          workerUrls: [],
+          probeCalls: 0,
+          spyInstalled: false,
+          spyError: null,
+        };
+        window.__TENJIN_ZIP_PROBE_SPY__ = state;
+        try {
+          const NativeWorker = window.Worker;
+          if (typeof NativeWorker !== "function") {
+            throw new Error("Worker constructor is unavailable");
+          }
+          function ObservedWorker(url, options) {
+            state.workerUrls.push(String(url));
+            return new NativeWorker(url, options);
+          }
+          Object.setPrototypeOf(ObservedWorker, NativeWorker);
+          ObservedWorker.prototype = NativeWorker.prototype;
+          window.Worker = ObservedWorker;
+          state.spyInstalled = window.Worker === ObservedWorker;
+        } catch (error) {
+          state.spyError = error instanceof Error ? error.message : String(error);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <h1>Tenjin ZIP reader browser probe</h1>
+    <p id="status">BOOTING</p>
+    <p>Wait for READY, switch DevTools Network to Offline, then run exactly once.</p>
+    <button id="run" type="button" disabled>Run offline probe</button>
+    <button id="copy" type="button" disabled>Copy JSON result</button>
+    <pre id="result" aria-live="polite"></pre>
+    <script type="module" src="/src/zip-reader-probe-main.ts"></script>
+  </body>
+</html>
