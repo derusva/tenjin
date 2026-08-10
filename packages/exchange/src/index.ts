@@ -34,3 +34,7 @@ export {
   type ManifestActuals,
 } from "./validateManifest.js";
 export { validateEvents } from "./validateEvents.js";
+export {
+  buildLedgerRestorePlan,
+  type LedgerRestorePlan,
+} from "./restorePlan.js";
