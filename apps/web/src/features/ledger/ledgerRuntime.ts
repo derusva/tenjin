@@ -1,4 +1,5 @@
 import {
+  serializeContextHashInput,
   type CaptureDiscardedEvent,
   type LearningChannel,
   type VerificationObservedEvent,
@@ -94,19 +95,9 @@ export function createLedgerRuntime(
         return next;
       },
       async hashContext(context) {
-        const input = {
-          original: context.original,
-          ...(context.corrected === undefined
-            ? {}
-            : { corrected: context.corrected }),
-          ...(context.answer === undefined
-            ? {}
-            : { answer: context.answer }),
-          ...(context.imageSha256 === undefined
-            ? {}
-            : { imageSha256: context.imageSha256 }),
-        };
-        const hexadecimal = await options.digest(JSON.stringify(input));
+        const hexadecimal = await options.digest(
+          serializeContextHashInput(context),
+        );
         return `sha256:${hexadecimal.toLowerCase()}`;
       },
     };

@@ -1,6 +1,7 @@
 import {
   normalizeIdentity,
   type CaptureCreatedEvent,
+  type ContextHashInput,
   type Event,
   type HybridLogicalClock,
   type ItemCreatedEvent,
@@ -35,12 +36,7 @@ export type CaptureCommand =
       readonly captureDurationMs?: number;
     };
 
-export interface CaptureContextHashInput {
-  readonly original: string;
-  readonly corrected?: string;
-  readonly answer?: string;
-  readonly imageSha256?: string;
-}
+export type CaptureContextHashInput = ContextHashInput;
 
 export interface CaptureDependencies {
   readonly deviceId: string;

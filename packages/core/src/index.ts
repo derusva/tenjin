@@ -1,3 +1,4 @@
+export * from "./contextHash.js";
 export * from "./events.js";
 export * from "./identity.js";
 export * from "./reducer.js";
