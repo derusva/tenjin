@@ -6,7 +6,8 @@ import {
   Uint8ArrayWriter,
   ZipReader,
 } from "@zip.js/zip.js";
-import { strFromU8, unzipSync } from "fflate";
+import { validateEvent } from "@tenjin/core";
+import { inflateSync, strFromU8, unzipSync } from "fflate";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -177,6 +178,84 @@ async function rawRead(
   }
 }
 
+async function entrySizeMetadata(
+  bytes: Uint8Array,
+): Promise<
+  Array<{ compressionMethod: number; signature: number; uncompressedSize: number }>
+> {
+  const reader = new ZipReader(new Uint8ArrayReader(bytes), {
+    ...ZIP_READER_OPTIONS,
+    strictness: "balanced",
+  });
+  try {
+    const metadata = [];
+    for await (const entry of reader.getEntriesGenerator()) {
+      metadata.push({
+        compressionMethod: entry.compressionMethod,
+        signature: entry.signature,
+        uncompressedSize: entry.uncompressedSize,
+      });
+    }
+    return metadata;
+  } finally {
+    await reader.close();
+  }
+}
+
+function readU16(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8);
+}
+
+function readU32(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset] ?? 0) |
+      ((bytes[offset + 1] ?? 0) << 8) |
+      ((bytes[offset + 2] ?? 0) << 16) |
+      ((bytes[offset + 3] ?? 0) << 24)) >>>
+    0
+  );
+}
+
+function crc32ForTest(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function inflateLocalEntries(bytes: Uint8Array): Array<{
+  actualSize: number;
+  compressionMethod: number;
+  declaredSize: number;
+  signature: number;
+}> {
+  const entries = [];
+  let offset = 0;
+  while (readU32(bytes, offset) === 0x04034b50) {
+    const compressionMethod = readU16(bytes, offset + 8);
+    const signature = readU32(bytes, offset + 14);
+    const compressedSize = readU32(bytes, offset + 18);
+    const declaredSize = readU32(bytes, offset + 22);
+    const dataOffset =
+      offset + 30 + readU16(bytes, offset + 26) + readU16(bytes, offset + 28);
+    const compressed = bytes.subarray(dataOffset, dataOffset + compressedSize);
+    const actual = compressionMethod === 8 ? inflateSync(compressed) : compressed;
+    expect(signature).toBe(crc32ForTest(actual));
+    entries.push({
+      actualSize: actual.byteLength,
+      compressionMethod,
+      declaredSize,
+      signature,
+    });
+    offset = dataOffset + compressedSize;
+  }
+  return entries;
+}
+
 describe("T0 G1/G4 - strictness, overlap, and CRC", () => {
   it("rejects only the filename mismatch in strict mode and fully reads it in balanced mode", async () => {
     await expect(rawRead(ZIP_PROBE_FIXTURES.filenameMismatch)).rejects.toThrow(
@@ -197,10 +276,16 @@ describe("T0 G1/G4 - strictness, overlap, and CRC", () => {
 
   it("pins the vendor CRC error and maps only it with the original cause", async () => {
     const tamperedEntries = unzipSync(ZIP_PROBE_FIXTURES.crcMismatch);
-    const tamperedJson = JSON.parse(
+    const tamperedJson: unknown = JSON.parse(
       strFromU8(tamperedEntries["events.jsonl"] ?? new Uint8Array()),
-    ) as { payload?: { display?: { original?: unknown } } };
-    expect(tamperedJson.payload?.display?.original).toBe("bravo");
+    );
+    const validation = validateEvent(tamperedJson);
+    expect(validation.valid).toBe(true);
+    if (!validation.valid) throw new Error("CRC fixture must remain a valid event");
+    if (validation.value.kind !== "item_created") {
+      throw new Error("CRC fixture must remain an item_created event");
+    }
+    expect(validation.value.payload.display).toBe("bravo");
 
     await expect(rawRead(ZIP_PROBE_FIXTURES.crcMismatch)).rejects.toThrow(
       ERR_INVALID_SIGNATURE,
@@ -348,7 +433,81 @@ describe("T0 G3 - compressed, declared, and actual-output limits", () => {
     expect(result.entries.get("valid.txt")).toEqual(ZIP_PROBE_EXPECTED.validPayload);
   });
 
+  it("stops a producer at the crossing chunk instead of consuming another chunk", async () => {
+    let attemptedAfterCrossing = false;
+    const factory: ZipReaderFactory = () => ({
+      async *getEntriesGenerator() {
+        yield {
+          filename: "events.jsonl",
+          directory: false,
+          encrypted: false,
+          compressionMethod: 8,
+          diskNumberStart: 0,
+          zip64: false,
+          compressedSize: 1,
+          uncompressedSize: 32,
+          async getData(writer) {
+            const target = writer as {
+              init(): Promise<void>;
+              writeUint8Array(bytes: Uint8Array): Promise<void>;
+              getData(): Promise<Uint8Array>;
+            };
+            await target.init();
+            await target.writeUint8Array(new Uint8Array(33));
+            attemptedAfterCrossing = true;
+            await target.writeUint8Array(new Uint8Array([1]));
+            return target.getData();
+          },
+        } satisfies RuntimeZipEntry;
+        return true;
+      },
+      close: () => Promise.resolve(),
+    });
+
+    await expectCode(
+      () =>
+        readZipEntriesWithRuntime(
+          new Uint8Array([1]),
+          SMALL_LIMITS,
+          factory,
+        ),
+      "PACKAGE_OUTPUT_LIMIT",
+    );
+    expect(attemptedAfterCrossing).toBe(false);
+  });
+
   it("uses actual chunks, aborts, closes, and preserves limit priority", async () => {
+    const entryLocal = inflateLocalEntries(ZIP_PROBE_FIXTURES.actualEntryOverflow);
+    expect(entryLocal).toMatchObject([
+      { actualSize: 33, compressionMethod: 8, declaredSize: 32 },
+    ]);
+    expect(await entrySizeMetadata(ZIP_PROBE_FIXTURES.actualEntryOverflow)).toEqual([
+      {
+        compressionMethod: 8,
+        signature: entryLocal[0]?.signature,
+        uncompressedSize: 32,
+      },
+    ]);
+    const packageLocal = inflateLocalEntries(
+      ZIP_PROBE_FIXTURES.actualPackageOverflow,
+    );
+    expect(packageLocal).toMatchObject([
+      { actualSize: 20, compressionMethod: 8, declaredSize: 20 },
+      { actualSize: 21, compressionMethod: 8, declaredSize: 20 },
+    ]);
+    expect(await entrySizeMetadata(ZIP_PROBE_FIXTURES.actualPackageOverflow)).toEqual([
+      {
+        compressionMethod: 8,
+        signature: packageLocal[0]?.signature,
+        uncompressedSize: 20,
+      },
+      {
+        compressionMethod: 8,
+        signature: packageLocal[1]?.signature,
+        uncompressedSize: 20,
+      },
+    ]);
+
     const entrySeen = observation();
     const entryError = await expectCode(
       () =>

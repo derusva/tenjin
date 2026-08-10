@@ -1,8 +1,10 @@
-import { strToU8, zipSync } from "fflate";
+import { deflateSync, strToU8, zipSync } from "fflate";
 
 interface StoredEntry {
   readonly name: string;
   readonly data: Uint8Array;
+  readonly compressedData?: Uint8Array;
+  readonly compressionMethod?: number;
   readonly declaredSize?: number;
   readonly centralExtra?: Uint8Array;
   readonly centralCompressedSize?: number;
@@ -63,18 +65,20 @@ function localRecord(
   name: string,
   data: Uint8Array,
   declaredSize = data.byteLength,
+  compressionMethod = 0,
+  compressedData = data,
 ): Uint8Array {
   const filename = ascii(name);
   const header = new Uint8Array(30);
   setU32(header, 0, 0x04034b50);
   setU16(header, 4, 20);
   setU16(header, 6, UTF8_FLAG);
-  setU16(header, 8, 0);
+  setU16(header, 8, compressionMethod);
   setU32(header, 14, crc32(data));
-  setU32(header, 18, data.byteLength);
+  setU32(header, 18, compressedData.byteLength);
   setU32(header, 22, declaredSize);
   setU16(header, 26, filename.byteLength);
-  return concat([header, filename, data]);
+  return concat([header, filename, compressedData]);
 }
 
 function centralRecord(entry: StoredEntry, offset: number): Uint8Array {
@@ -85,12 +89,14 @@ function centralRecord(entry: StoredEntry, offset: number): Uint8Array {
   setU16(header, 4, 20);
   setU16(header, 6, 20);
   setU16(header, 8, UTF8_FLAG);
-  setU16(header, 10, 0);
+  setU16(header, 10, entry.compressionMethod ?? 0);
   setU32(header, 16, crc32(entry.data));
   setU32(
     header,
     20,
-    entry.centralCompressedSize ?? entry.data.byteLength,
+    entry.centralCompressedSize ??
+      entry.compressedData?.byteLength ??
+      entry.data.byteLength,
   );
   setU32(
     header,
@@ -133,7 +139,13 @@ function storedZip(
     offsets.push(offset);
     const local =
       entry.localBytes ??
-      localRecord(entry.name, entry.data, entry.declaredSize);
+      localRecord(
+        entry.name,
+        entry.data,
+        entry.declaredSize,
+        entry.compressionMethod,
+        entry.compressedData,
+      );
     localChunks.push(local);
     offset += local.byteLength;
   }
@@ -170,7 +182,7 @@ function filenameMismatchFixture(): Uint8Array {
 
 function crcMismatchFixture(): Uint8Array {
   const original = ascii(
-    '{"type":"item_created","payload":{"display":{"original":"alpha"}}}\n',
+    '{"schemaVersion":1,"eventId":"device-a:1","deviceId":"device-a","seq":1,"hlc":{"wallTime":1,"counter":0},"occurredAt":"2026-08-05T00:00:00.000Z","recordedAt":"2026-08-05T00:00:00.000Z","actor":"user","kind":"item_created","itemId":"item-1","captureId":"capture-1","payload":{"display":"alpha","identityKey":"alpha","targetChannels":["R"]}}\n',
   );
   const bytes = storedZip([{ name: "events.jsonl", data: original }]);
   const dataOffset = 30 + ascii("events.jsonl").byteLength;
@@ -181,6 +193,20 @@ function crcMismatchFixture(): Uint8Array {
   bytes[dataOffset + alphaOffset + 3] = "v".charCodeAt(0);
   bytes[dataOffset + alphaOffset + 4] = "o".charCodeAt(0);
   return bytes;
+}
+
+function deflatedEntry(
+  name: string,
+  data: Uint8Array,
+  declaredSize = data.byteLength,
+): StoredEntry {
+  return {
+    name,
+    data,
+    compressedData: deflateSync(data),
+    compressionMethod: 8,
+    declaredSize,
+  };
 }
 
 function overlapFixture(): Uint8Array {
@@ -307,11 +333,11 @@ const FIXTURES = {
   zip64ArchiveSentinels: zip64ArchiveSentinelFixture(),
   magicBytesInPayloadAndComment: magicBytesFixture(),
   actualEntryOverflow: storedZip([
-    { name: "events.jsonl", data: new Uint8Array(33), declaredSize: 32 },
+    deflatedEntry("events.jsonl", new Uint8Array(33), 32),
   ]),
   actualPackageOverflow: storedZip([
-    { name: "manifest.json", data: new Uint8Array(20) },
-    { name: "events.jsonl", data: new Uint8Array(21), declaredSize: 20 },
+    deflatedEntry("manifest.json", new Uint8Array(20)),
+    deflatedEntry("events.jsonl", new Uint8Array(21), 20),
   ]),
 } as const;
 
