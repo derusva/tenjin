@@ -21,6 +21,7 @@ export type EquivalenceFailureCode =
   | "L1_STORE_KEYSET"
   | "L1_EVENTS_MISMATCH"
   | "L1_CONTEXTS_MISMATCH"
+  | "L1_IMPORT_RECEIPTS_MISMATCH"
   | "L2_ITEM_VIEW"
   | "L2_REVIEW_QUEUE"
   | "L3_IDENTITY"
@@ -65,8 +66,13 @@ interface StoreContents {
   readonly values: readonly unknown[];
 }
 
-const LEDGER_STORES = ["events", "contexts", "clock"] as const;
-const L1_VALUE_STORES = ["events", "contexts"] as const;
+const LEDGER_STORES = [
+  "events",
+  "contexts",
+  "clock",
+  "importReceipts",
+] as const;
+const L1_VALUE_STORES = ["events", "contexts", "importReceipts"] as const;
 
 function openExistingDatabase(name: string): Promise<IDBDatabase> {
   if (name.trim().length === 0 || name !== name.trim()) {
@@ -198,7 +204,11 @@ async function verifyL1(
     if (!(await structurallyEqual(sourceContents.values, restoredContents.values))) {
       addFailure(
         failures,
-        store === "events" ? "L1_EVENTS_MISMATCH" : "L1_CONTEXTS_MISMATCH",
+        store === "events"
+          ? "L1_EVENTS_MISMATCH"
+          : store === "contexts"
+            ? "L1_CONTEXTS_MISMATCH"
+            : "L1_IMPORT_RECEIPTS_MISMATCH",
         `${store} values differ`,
       );
     }
@@ -513,12 +523,13 @@ export async function cloneLedgerDatabase(
   try {
     const names = storeNames(source);
     if (!sameStringSet(names, LEDGER_STORES)) {
-      throw new TypeError("source database is not a three-store Tenjin ledger");
+      throw new TypeError("source database is not a four-store Tenjin ledger");
     }
     const events = await readStoreContents(source, "events");
     const contexts = await readStoreContents(source, "contexts");
     const clock = await readStoreContents(source, "clock");
-    sourceContents = { events, contexts, clock };
+    const importReceipts = await readStoreContents(source, "importReceipts");
+    sourceContents = { events, contexts, clock, importReceipts };
   } finally {
     source.close();
   }
@@ -528,7 +539,7 @@ export async function cloneLedgerDatabase(
   const target = await openExistingDatabase(targetDatabaseName);
   try {
     if (!sameStringSet(storeNames(target), LEDGER_STORES)) {
-      throw new TypeError("clone target is not a three-store Tenjin ledger");
+      throw new TypeError("clone target is not a four-store Tenjin ledger");
     }
     const transaction = target.transaction([...LEDGER_STORES], "readwrite");
     const completion = transactionCompletion(transaction);

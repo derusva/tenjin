@@ -5,11 +5,18 @@ export {
   type ContextImageMediaType,
   type ContextImageRecord,
   type ContextRecord,
+  type CaptureWrite,
+  type CoachImportRepository,
+  type DiscardWrite,
   type EventCoordinate,
+  type LedgerBackupReader,
+  type LedgerBackupSnapshot,
   type LedgerRepository,
   type LedgerSnapshot,
   type OpenLedgerRepositoryOptions,
+  type OpenedLedgerRepository,
 } from "./repository.js";
+export type { CoachImportReceipt } from "./importReceipt.js";
 export type {
   LedgerRestorer,
   RestoreContextInput,

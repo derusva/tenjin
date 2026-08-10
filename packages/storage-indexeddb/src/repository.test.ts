@@ -1,10 +1,11 @@
 import "fake-indexeddb/auto";
 
-import type {
-  CaptureCreatedEvent,
-  CaptureDiscardedEvent,
-  Event,
-  ItemCreatedEvent,
+import {
+  serializeContextHashInput,
+  type CaptureCreatedEvent,
+  type CaptureDiscardedEvent,
+  type Event,
+  type ItemCreatedEvent,
 } from "@tenjin/core";
 import { deleteDB, openDB, type DBSchema } from "idb";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,9 +13,13 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   openLedgerRepository,
   structurallyEqual,
+  type CaptureWrite,
   type ContextRecord,
+  type DiscardWrite,
   type LedgerRepository,
+  type OpenedLedgerRepository,
 } from "./repository.js";
+import type { CoachImportReceipt } from "./importReceipt.js";
 import * as publicApi from "./index.js";
 
 function packageRootMustNotExposeStructurallyEqual() {
@@ -32,7 +37,9 @@ function createDatabaseName(testName: string): string {
   return dbName;
 }
 
-async function openTestRepository(testName: string): Promise<LedgerRepository> {
+async function openTestRepository(
+  testName: string,
+): Promise<OpenedLedgerRepository> {
   const repository = await openLedgerRepository({
     dbName: createDatabaseName(testName),
   });
@@ -114,6 +121,114 @@ interface LegacyLedgerDatabase extends DBSchema {
     key: string;
     value: ContextRecord;
   };
+}
+
+interface VersionTwoLedgerDatabase extends LegacyLedgerDatabase {
+  clock: {
+    key: string;
+    value: unknown;
+  };
+}
+
+async function sha256Text(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function importedCaptureWrite(
+  label: string,
+  seq: number,
+  captureId = `capture-${label}`,
+  contextOverride: Partial<ContextRecord> = {},
+): Promise<CaptureWrite> {
+  const original = `source sentence ${label}`;
+  const focus = `focus ${label}`;
+  const answer = `answer ${label}`;
+  const hash = `sha256:${await sha256Text(
+    serializeContextHashInput({ original, focus, answer }),
+  )}`;
+  const importedContext = {
+    hash,
+    original,
+    focus,
+    answer,
+    createdAt: "2026-08-11T00:00:00.000Z",
+    ...contextOverride,
+  } satisfies ContextRecord;
+  const event = {
+    ...captureCreatedEvent,
+    eventId: `event-import-${label}`,
+    deviceId: "device-coach",
+    seq,
+    hlc: {
+      wallTime: captureCreatedEvent.hlc.wallTime + seq,
+      counter: 0,
+    },
+    captureId,
+    contextHash: importedContext.hash,
+  } satisfies CaptureCreatedEvent;
+  return { events: [event], context: importedContext };
+}
+
+function receiptFor(
+  writes: readonly CaptureWrite[],
+  hexadecimal = "11".repeat(32),
+  importedAt = "2026-08-11T00:00:01.000Z",
+): CoachImportReceipt {
+  return {
+    digest: `sha256:${hexadecimal}`,
+    importedAt,
+    captureIds: writes.map(
+      (write) =>
+        write.events.find((event) => event.kind === "capture_created")!
+          .captureId,
+    ),
+  };
+}
+
+function discardWrite(
+  captureId: string,
+  contextHash: string,
+  seq: number,
+): DiscardWrite {
+  return {
+    event: {
+      ...captureDiscardedEvent,
+      eventId: `event-batch-discard-${seq}`,
+      deviceId: "device-coach",
+      seq,
+      hlc: {
+        wallTime: captureDiscardedEvent.hlc.wallTime + seq,
+        counter: 0,
+      },
+      captureId,
+    },
+    contextHash,
+  };
+}
+
+async function allStoreCounts(name: string): Promise<readonly number[]> {
+  const database = await openDB(name);
+  try {
+    const transaction = database.transaction(
+      ["events", "contexts", "clock", "importReceipts"],
+      "readonly",
+    );
+    const counts = await Promise.all(
+      ["events", "contexts", "clock", "importReceipts"].map((store) =>
+        transaction.objectStore(store).count(),
+      ),
+    );
+    await transaction.done;
+    return counts;
+  } finally {
+    database.close();
+  }
 }
 
 afterEach(async () => {
@@ -214,7 +329,7 @@ describe("openLedgerRepository", () => {
     const repository = await openLedgerRepository({ dbName });
     openRepositories.add(repository);
     let futureDatabase: Awaited<ReturnType<typeof openDB>> | undefined;
-    const futureOpening = openDB(dbName, 3).then((database) => {
+    const futureOpening = openDB(dbName, 4).then((database) => {
       futureDatabase = database;
       return "opened" as const;
     });
@@ -323,6 +438,45 @@ describe("openLedgerRepository", () => {
         hlc: { wallTime: persistedWallTime, counter: 8 },
       },
     ]);
+  });
+
+  it("losslessly upgrades a v2 ledger to v3 and adds an empty receipt store", async () => {
+    const dbName = createDatabaseName("v2-v3-lossless");
+    const clockRecord = {
+      key: "global-hlc",
+      type: "global-hlc",
+      hlc: captureCreatedEvent.hlc,
+    } as const;
+    const versionTwo = await openDB<VersionTwoLedgerDatabase>(dbName, 2, {
+      upgrade(database) {
+        database.createObjectStore("events", { keyPath: "eventId" });
+        database.createObjectStore("contexts", { keyPath: "hash" });
+        database.createObjectStore("clock", { keyPath: "key" });
+      },
+    });
+    await versionTwo.put("events", captureCreatedEvent);
+    await versionTwo.put("contexts", context);
+    await versionTwo.put("clock", clockRecord);
+    versionTwo.close();
+
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    expect(await repository.readSnapshot()).toEqual({
+      events: [captureCreatedEvent],
+      contexts: [context],
+    });
+    expect((await repository.readBackupSnapshot()).importReceipts).toEqual([]);
+
+    const upgraded = await openDB<VersionTwoLedgerDatabase>(dbName);
+    expect(upgraded.version).toBe(3);
+    expect(Array.from(upgraded.objectStoreNames)).toEqual([
+      "clock",
+      "contexts",
+      "events",
+      "importReceipts",
+    ]);
+    expect(await upgraded.get("clock", "global-hlc")).toEqual(clockRecord);
+    upgraded.close();
   });
 
   it("raises allocator high-water marks after imported events and reopening", async () => {
@@ -1102,5 +1256,396 @@ describe("openLedgerRepository", () => {
       events: [],
       contexts: [],
     });
+  });
+});
+
+describe("Coach import repository capabilities", () => {
+  it("commits every capture and its receipt in one batch", async () => {
+    const repository = await openTestRepository("coach-batch-commit");
+    const writes = [
+      await importedCaptureWrite("one", 1),
+      await importedCaptureWrite("two", 2),
+    ];
+    const receipt = receiptFor(writes);
+
+    await expect(
+      repository.appendImportedCaptureBatch(writes, receipt),
+    ).resolves.toBe("imported");
+
+    const backup = await repository.readBackupSnapshot();
+    expect(backup.events).toHaveLength(2);
+    expect(backup.contexts).toHaveLength(2);
+    expect(backup.importReceipts).toEqual([receipt]);
+  });
+
+  it("validates every capture hash before opening the atomic write", async () => {
+    const repository = await openTestRepository("coach-invalid-second");
+    const first = await importedCaptureWrite("valid", 1);
+    const second = await importedCaptureWrite("invalid", 2);
+    const invalidSecond = {
+      ...second,
+      context: { ...second.context, original: "tampered after hashing" },
+    } satisfies CaptureWrite;
+
+    await expect(
+      repository.appendImportedCaptureBatch(
+        [first, invalidSecond],
+        receiptFor([first, invalidSecond]),
+      ),
+    ).rejects.toThrow(/context hash.*serialized content/i);
+    expect(await repository.readBackupSnapshot()).toEqual({
+      events: [],
+      contexts: [],
+      importReceipts: [],
+    });
+  });
+
+  it("treats the digest as the idempotency key with zero second-call changes", async () => {
+    const repository = await openTestRepository("coach-digest-idempotency");
+    const first = await importedCaptureWrite("first", 1);
+    const second = await importedCaptureWrite("second", 2);
+    const digest = "22".repeat(32);
+    await repository.appendImportedCaptureBatch(
+      [first],
+      receiptFor([first], digest),
+    );
+    const before = await repository.readBackupSnapshot();
+
+    await expect(
+      repository.appendImportedCaptureBatch(
+        [second],
+        receiptFor([second], digest, "2026-08-11T00:00:02.000Z"),
+      ),
+    ).resolves.toBe("already-imported");
+
+    await expect(
+      structurallyEqual(await repository.readBackupSnapshot(), before),
+    ).resolves.toBe(true);
+  });
+
+  it("checks a receipt digest without mutating any store", async () => {
+    const repository = await openTestRepository("coach-receipt-read");
+    const write = await importedCaptureWrite("receipt-read", 1);
+    const receipt = receiptFor([write], "23".repeat(32));
+
+    await expect(repository.hasImportReceipt(receipt.digest)).resolves.toBe(false);
+    await repository.appendImportedCaptureBatch([write], receipt);
+    const before = await repository.readBackupSnapshot();
+    await expect(repository.hasImportReceipt(receipt.digest)).resolves.toBe(true);
+    await expect(
+      repository.hasImportReceipt(`sha256:${"AA".repeat(32)}`),
+    ).rejects.toThrow(/lowercase/i);
+    await expect(
+      structurallyEqual(await repository.readBackupSnapshot(), before),
+    ).resolves.toBe(true);
+  });
+
+  it("serializes concurrent imports of the same digest across connections", async () => {
+    const dbName = createDatabaseName("coach-digest-concurrency");
+    const firstRepository = await openLedgerRepository({ dbName });
+    const secondRepository = await openLedgerRepository({ dbName });
+    openRepositories.add(firstRepository);
+    openRepositories.add(secondRepository);
+    const first = await importedCaptureWrite("race-a", 1);
+    const second = await importedCaptureWrite("race-b", 2);
+    const digest = "33".repeat(32);
+
+    const results = await Promise.all([
+      firstRepository.appendImportedCaptureBatch(
+        [first],
+        receiptFor([first], digest),
+      ),
+      secondRepository.appendImportedCaptureBatch(
+        [second],
+        receiptFor([second], digest),
+      ),
+    ]);
+    expect(results.sort()).toEqual(["already-imported", "imported"]);
+
+    const backup = await firstRepository.readBackupSnapshot();
+    expect(backup.events).toHaveLength(1);
+    expect(backup.contexts).toHaveLength(1);
+    expect(backup.importReceipts).toHaveLength(1);
+    const storedCapture = backup.events.find(
+      (event) => event.kind === "capture_created",
+    )!;
+    expect(backup.importReceipts[0]!.captureIds).toEqual([
+      storedCapture.captureId,
+    ]);
+  });
+
+  it.each([
+    {
+      name: "a bare digest",
+      mutate: (receipt: CoachImportReceipt) => ({
+        ...receipt,
+        digest: "44".repeat(32),
+      }),
+    },
+    {
+      name: "an uppercase digest",
+      mutate: (receipt: CoachImportReceipt) => ({
+        ...receipt,
+        digest: `sha256:${"AA".repeat(32)}`,
+      }),
+    },
+    {
+      name: "a non-canonical timestamp",
+      mutate: (receipt: CoachImportReceipt) => ({
+        ...receipt,
+        importedAt: "2026-08-11T00:00:01Z",
+      }),
+    },
+    {
+      name: "blank captureIds",
+      mutate: (receipt: CoachImportReceipt) => ({
+        ...receipt,
+        captureIds: ["   "],
+      }),
+    },
+    {
+      name: "duplicate captureIds",
+      mutate: (receipt: CoachImportReceipt) => ({
+        ...receipt,
+        captureIds: [receipt.captureIds[0]!, receipt.captureIds[0]!],
+      }),
+    },
+    {
+      name: "an unknown field",
+      mutate: (receipt: CoachImportReceipt) => ({
+        ...receipt,
+        futureField: true,
+      }),
+    },
+    {
+      name: "a missing field",
+      mutate: (receipt: CoachImportReceipt) => ({
+        digest: receipt.digest,
+        captureIds: receipt.captureIds,
+      }),
+    },
+    {
+      name: "a symbol field",
+      mutate: (receipt: CoachImportReceipt) => {
+        const changed = { ...receipt };
+        Object.defineProperty(changed, Symbol("future"), {
+          value: true,
+          enumerable: true,
+        });
+        return changed;
+      },
+    },
+  ])("rejects a receipt with $name through the closed validator", async ({
+    name,
+    mutate,
+  }) => {
+    const repository = await openTestRepository(`coach-receipt-${name}`);
+    const write = await importedCaptureWrite(`receipt-${name}`, 1);
+    const invalidReceipt = mutate(receiptFor([write])) as CoachImportReceipt;
+
+    await expect(
+      repository.appendImportedCaptureBatch([write], invalidReceipt),
+    ).rejects.toThrow(/receipt/i);
+    expect(await repository.readBackupSnapshot()).toEqual({
+      events: [],
+      contexts: [],
+      importReceipts: [],
+    });
+  });
+
+  it("handles prototype-named capture ids without losing receipt references", async () => {
+    const repository = await openTestRepository("coach-prototype-capture-ids");
+    const writes = [
+      await importedCaptureWrite("prototype", 1, "__proto__"),
+      await importedCaptureWrite("constructor", 2, "constructor"),
+    ];
+    const receipt = receiptFor(writes, "55".repeat(32));
+
+    await repository.appendImportedCaptureBatch(writes, receipt);
+
+    expect((await repository.readBackupSnapshot()).importReceipts).toEqual([
+      receipt,
+    ]);
+  });
+
+  it("rolls back events, contexts, clock, and receipt when receipt put throws", async () => {
+    const dbName = createDatabaseName("coach-receipt-put-rollback");
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    const writes = [
+      await importedCaptureWrite("rollback-a", 1),
+      await importedCaptureWrite("rollback-b", 2),
+    ];
+    const receipt = receiptFor(writes, "66".repeat(32));
+    const nativePut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ): IDBRequest<IDBValidKey> {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "digest" in value &&
+        value.digest === receipt.digest
+      ) {
+        throw new Error("injected receipt put failure");
+      }
+      return Reflect.apply(
+        nativePut,
+        this,
+        key === undefined ? [value] : [value, key],
+      ) as IDBRequest<IDBValidKey>;
+    };
+
+    try {
+      await expect(
+        repository.appendImportedCaptureBatch(writes, receipt),
+      ).rejects.toThrow("injected receipt put failure");
+    } finally {
+      IDBObjectStore.prototype.put = nativePut;
+    }
+    expect(await allStoreCounts(dbName)).toEqual([0, 0, 0, 0]);
+  });
+
+  it("batch discard performs final active-reference GC and retains receipts", async () => {
+    const repository = await openTestRepository("coach-batch-discard-gc");
+    const first = await importedCaptureWrite("shared", 1, "capture-shared-a");
+    const firstEvent = first.events[0]! as CaptureCreatedEvent;
+    const second = {
+      events: [
+        {
+          ...firstEvent,
+          eventId: "event-import-shared-second",
+          seq: 2,
+          hlc: { wallTime: firstEvent.hlc.wallTime + 1, counter: 0 },
+          captureId: "capture-shared-b",
+        },
+      ],
+      context: first.context,
+    } satisfies CaptureWrite;
+    const writes = [first, second];
+    const receipt = receiptFor(writes, "77".repeat(32));
+    await repository.appendImportedCaptureBatch(writes, receipt);
+
+    await repository.appendDiscardBatch([
+      discardWrite("capture-shared-a", first.context.hash, 10),
+      discardWrite("capture-shared-b", first.context.hash, 11),
+    ]);
+
+    const backup = await repository.readBackupSnapshot();
+    expect(backup.events).toHaveLength(4);
+    expect(backup.contexts).toEqual([]);
+    expect(backup.importReceipts).toEqual([receipt]);
+  });
+
+  it("rejects a discard whose capture and context do not belong together", async () => {
+    const repository = await openTestRepository("coach-batch-discard-mismatch");
+    const first = await importedCaptureWrite("mismatch-a", 1);
+    const second = await importedCaptureWrite("mismatch-b", 2);
+    const writes = [first, second];
+    await repository.appendImportedCaptureBatch(
+      writes,
+      receiptFor(writes, "78".repeat(32)),
+    );
+    const before = await repository.readBackupSnapshot();
+    const firstCapture = first.events[0]! as CaptureCreatedEvent;
+
+    await expect(
+      repository.appendDiscardBatch([
+        discardWrite(firstCapture.captureId, second.context.hash, 10),
+      ]),
+    ).rejects.toThrow(/belongs to context/i);
+    await expect(
+      structurallyEqual(await repository.readBackupSnapshot(), before),
+    ).resolves.toBe(true);
+  });
+
+  it("rolls back every discard when a later discard put throws", async () => {
+    const repository = await openTestRepository("coach-batch-discard-rollback");
+    const writes = [
+      await importedCaptureWrite("discard-a", 1),
+      await importedCaptureWrite("discard-b", 2),
+    ];
+    const receipt = receiptFor(writes, "88".repeat(32));
+    await repository.appendImportedCaptureBatch(writes, receipt);
+    const discards = writes.map((write, index) => {
+      const capture = write.events[0]! as CaptureCreatedEvent;
+      return discardWrite(capture.captureId, write.context.hash, 10 + index);
+    });
+    const before = await repository.readBackupSnapshot();
+    const nativePut = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (
+      this: IDBObjectStore,
+      value: unknown,
+      key?: IDBValidKey,
+    ): IDBRequest<IDBValidKey> {
+      if (
+        typeof value === "object" &&
+        value !== null &&
+        "eventId" in value &&
+        value.eventId === discards[1]!.event.eventId
+      ) {
+        throw new Error("injected second discard put failure");
+      }
+      return Reflect.apply(
+        nativePut,
+        this,
+        key === undefined ? [value] : [value, key],
+      ) as IDBRequest<IDBValidKey>;
+    };
+
+    try {
+      await expect(repository.appendDiscardBatch(discards)).rejects.toThrow(
+        "injected second discard put failure",
+      );
+    } finally {
+      IDBObjectStore.prototype.put = nativePut;
+    }
+    await expect(
+      structurallyEqual(await repository.readBackupSnapshot(), before),
+    ).resolves.toBe(true);
+  });
+
+  it("reads one coherent backup snapshot through a single IndexedDB transaction", async () => {
+    const repository = await openTestRepository("coach-backup-single-tx");
+    const write = await importedCaptureWrite("backup", 1);
+    await repository.appendImportedCaptureBatch(
+      [write],
+      receiptFor([write], "99".repeat(32)),
+    );
+    const nativeTransaction = IDBDatabase.prototype.transaction;
+    const observedStoreSets: string[][] = [];
+    IDBDatabase.prototype.transaction = function (
+      this: IDBDatabase,
+      storeNames: string | string[],
+      mode?: IDBTransactionMode,
+      options?: IDBTransactionOptions,
+    ): IDBTransaction {
+      observedStoreSets.push(
+        (typeof storeNames === "string" ? [storeNames] : [...storeNames]).sort(),
+      );
+      return Reflect.apply(
+        nativeTransaction,
+        this,
+        options === undefined
+          ? mode === undefined
+            ? [storeNames]
+            : [storeNames, mode]
+          : [storeNames, mode, options],
+      ) as IDBTransaction;
+    };
+
+    try {
+      const backup = await repository.readBackupSnapshot();
+      expect(backup.events).toHaveLength(1);
+      expect(backup.contexts).toHaveLength(1);
+      expect(backup.importReceipts).toHaveLength(1);
+    } finally {
+      IDBDatabase.prototype.transaction = nativeTransaction;
+    }
+    expect(observedStoreSets).toEqual([
+      ["contexts", "events", "importReceipts"],
+    ]);
   });
 });

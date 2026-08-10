@@ -13,8 +13,10 @@ import {
   structurallyEqual,
   type ContextRecord,
   type LedgerRepository,
+  type OpenedLedgerRepository,
 } from "./repository.js";
-import type { LedgerRestorer, RestoreLedgerInput } from "./restore.js";
+import type { CoachImportReceipt } from "./importReceipt.js";
+import type { RestoreLedgerInput } from "./restore.js";
 import {
   cloneLedgerDatabase,
   verifyLedgerEquivalence,
@@ -26,6 +28,7 @@ interface TestLedgerDatabase extends DBSchema {
   events: { key: string; value: Event };
   contexts: { key: string; value: ContextRecord };
   clock: { key: string; value: unknown };
+  importReceipts: { key: string; value: CoachImportReceipt };
 }
 
 const databases = new Set<string>();
@@ -161,8 +164,8 @@ const queueProjection: ReviewQueueProbe = (view, snapshot) => {
 interface Harness {
   readonly sourceName: string;
   readonly restoredName: string;
-  readonly source: LedgerRepository & LedgerRestorer;
-  readonly restored: LedgerRepository & LedgerRestorer;
+  readonly source: OpenedLedgerRepository;
+  readonly restored: OpenedLedgerRepository;
   readonly input: RestoreLedgerInput;
   readonly verifyInput: Omit<VerifyLedgerEquivalenceInput, "reviewQueueProbe">;
 }
@@ -176,7 +179,15 @@ async function createHarness(label: string): Promise<Harness> {
   repositories.add(restored);
   const context = await fixtureContext();
   const events = fixtureEvents(context.hash);
-  await source.appendCapture(events, context);
+  const importReceipt = {
+    digest: `sha256:${"11".repeat(32)}`,
+    importedAt: "2026-08-11T00:00:01.000Z",
+    captureIds: ["capture-1"],
+  } as const satisfies CoachImportReceipt;
+  await source.appendImportedCaptureBatch(
+    [{ events, context }],
+    importReceipt,
+  );
   const input: RestoreLedgerInput = {
     events,
     contexts: [
@@ -194,6 +205,7 @@ async function createHarness(label: string): Promise<Harness> {
         createdAt: context.createdAt,
       },
     ],
+    importReceipts: [importReceipt],
     globalHlc: PACKAGE_MAX_HLC,
     maxSeqByDevice: { "device-source": 3 },
     forbiddenDeviceIds: ["device-source", "device-exporter"],
@@ -218,7 +230,7 @@ async function createHarness(label: string): Promise<Harness> {
 
 async function putRecord(
   databaseNameValue: string,
-  storeName: "events" | "contexts" | "clock",
+  storeName: "events" | "contexts" | "clock" | "importReceipts",
   value: unknown,
 ): Promise<void> {
   const database = await openDB<TestLedgerDatabase>(databaseNameValue);
@@ -233,7 +245,7 @@ async function putRecord(
 
 async function clearStore(
   databaseNameValue: string,
-  storeName: "events" | "contexts" | "clock",
+  storeName: "events" | "contexts" | "clock" | "importReceipts",
 ): Promise<void> {
   const database = await openDB<TestLedgerDatabase>(databaseNameValue);
   try {
@@ -247,7 +259,7 @@ async function clearStore(
 
 async function deleteRecord(
   databaseNameValue: string,
-  storeName: "events" | "contexts" | "clock",
+  storeName: "events" | "contexts" | "clock" | "importReceipts",
   key: string,
 ): Promise<void> {
   const database = await openDB<TestLedgerDatabase>(databaseNameValue);
@@ -264,13 +276,14 @@ async function dumpDatabase(name: string) {
   const database = await openDB<TestLedgerDatabase>(name);
   try {
     const transaction = database.transaction(
-      ["events", "contexts", "clock"],
+      ["events", "contexts", "clock", "importReceipts"],
       "readonly",
     );
     const result = await Promise.all([
       transaction.objectStore("events").getAll(),
       transaction.objectStore("contexts").getAll(),
       transaction.objectStore("clock").getAll(),
+      transaction.objectStore("importReceipts").getAll(),
     ]);
     await transaction.done;
     return result;
@@ -359,6 +372,23 @@ describe("verifyLedgerEquivalence", () => {
     );
   });
 
+  it("compares import receipts exactly through the L1 storage layer", async () => {
+    const harness = await createHarness("receipt-mismatch");
+    const receipt = harness.input.importReceipts![0]!;
+    await putRecord(harness.restoredName, "importReceipts", {
+      ...receipt,
+      importedAt: "2026-08-11T00:00:02.000Z",
+    });
+
+    const report = await verifyLedgerEquivalence({
+      ...harness.verifyInput,
+      reviewQueueProbe: queueProjection,
+    });
+    expect(report.failures.map(({ code }) => code)).toContain(
+      "L1_IMPORT_RECEIPTS_MISMATCH",
+    );
+  });
+
   it("reports a derived ItemView difference independently of L1", async () => {
     const harness = await createHarness("item-view");
     const changed = {
@@ -379,7 +409,7 @@ describe("verifyLedgerEquivalence", () => {
     );
   });
 
-  it("fails closed when a fourth object store is present", async () => {
+  it("fails closed when an unknown fifth object store is present", async () => {
     const harness = await createHarness("unknown-store");
     harness.restored.close();
     repositories.delete(harness.restored);
@@ -527,6 +557,9 @@ describe("verifyLedgerEquivalence", () => {
     );
     const coordinate = coordinates[0]!;
     expect(coordinate.seq).toBe(1);
+    expect((await clone.readBackupSnapshot()).importReceipts).toEqual(
+      harness.input.importReceipts,
+    );
     expect(
       coordinate.hlc.wallTime > PACKAGE_MAX_HLC.wallTime ||
         (coordinate.hlc.wallTime === PACKAGE_MAX_HLC.wallTime &&
@@ -562,23 +595,24 @@ describe("verifyLedgerEquivalence", () => {
       cloneLedgerDatabase(harness.restoredName, cloneName),
     ).rejects.toThrow("injected clone put failure after scheduling");
     expect(putCalls).toBe(2);
-    expect(await dumpDatabase(cloneName)).toEqual([[], [], []]);
+    expect(await dumpDatabase(cloneName)).toEqual([[], [], [], []]);
   });
 
   it("rejects and closes a malformed clone target that lacks a ledger store", async () => {
     const harness = await createHarness("clone-malformed-target");
     const cloneName = databaseName("clone-malformed-target-db");
-    const malformed = await openDB(cloneName, 2, {
+    const malformed = await openDB(cloneName, 3, {
       upgrade(database) {
         database.createObjectStore("events", { keyPath: "eventId" });
         database.createObjectStore("contexts", { keyPath: "hash" });
+        database.createObjectStore("clock", { keyPath: "key" });
       },
     });
     malformed.close();
 
     await expect(
       cloneLedgerDatabase(harness.restoredName, cloneName),
-    ).rejects.toThrow(/target.*three-store Tenjin ledger/i);
+    ).rejects.toThrow(/target.*four-store Tenjin ledger/i);
 
     let deletionWasBlocked = false;
     await deleteDB(cloneName, {

@@ -1,4 +1,5 @@
 import {
+  serializeContextHashInput,
   validateEvent,
   type CaptureCreatedEvent,
   type CaptureDiscardedEvent,
@@ -22,6 +23,11 @@ import {
   type LedgerRestorer,
   type RestoreLedgerInput,
 } from "./restore.js";
+import {
+  assertCoachImportDigest,
+  assertCoachImportReceipt,
+  type CoachImportReceipt,
+} from "./importReceipt.js";
 
 export const CONTEXT_IMAGE_MEDIA_TYPES = [
   "image/jpeg",
@@ -57,6 +63,20 @@ export interface LedgerSnapshot {
   readonly contexts: readonly ContextRecord[];
 }
 
+export interface LedgerBackupSnapshot extends LedgerSnapshot {
+  readonly importReceipts: readonly CoachImportReceipt[];
+}
+
+export interface CaptureWrite {
+  readonly events: readonly Event[];
+  readonly context: ContextRecord;
+}
+
+export interface DiscardWrite {
+  readonly event: CaptureDiscardedEvent;
+  readonly contextHash: string;
+}
+
 export interface EventCoordinate {
   readonly seq: number;
   readonly hlc: HybridLogicalClock;
@@ -81,6 +101,26 @@ export interface LedgerRepository {
   close(): void;
 }
 
+/** Optional capability kept separate so existing LedgerRepository mocks stay valid. */
+export interface CoachImportRepository {
+  hasImportReceipt(digest: string): Promise<boolean>;
+  appendImportedCaptureBatch(
+    writes: readonly CaptureWrite[],
+    receipt: CoachImportReceipt,
+  ): Promise<"imported" | "already-imported">;
+  appendDiscardBatch(writes: readonly DiscardWrite[]): Promise<void>;
+}
+
+/** Backup reads include fold-external state without widening LedgerRepository. */
+export interface LedgerBackupReader {
+  readBackupSnapshot(): Promise<LedgerBackupSnapshot>;
+}
+
+export type OpenedLedgerRepository = LedgerRepository &
+  LedgerRestorer &
+  CoachImportRepository &
+  LedgerBackupReader;
+
 export interface OpenLedgerRepositoryOptions {
   readonly dbName?: string;
 }
@@ -97,6 +137,10 @@ interface LedgerDatabase extends DBSchema {
   clock: {
     key: string;
     value: AllocatorRecord;
+  };
+  importReceipts: {
+    key: string;
+    value: CoachImportReceipt;
   };
 }
 
@@ -123,6 +167,7 @@ const CONTEXT_IMAGE_MEDIA_TYPE_SET = new Set<string>(
   CONTEXT_IMAGE_MEDIA_TYPES,
 );
 const SHA256_HEXADECIMAL = /^[a-f0-9]{64}$/;
+const PREFIXED_SHA256_HEXADECIMAL = /^sha256:[a-f0-9]{64}$/;
 const CONTEXT_FIELD_SET = new Set([
   "hash",
   "original",
@@ -278,6 +323,37 @@ async function assertValidContextImageDigest(
   }
 }
 
+async function assertValidContextHash(context: ContextRecord): Promise<void> {
+  if (!PREFIXED_SHA256_HEXADECIMAL.test(context.hash)) {
+    throw new TypeError(
+      "Context hash must be sha256: followed by 64 lowercase hexadecimal characters",
+    );
+  }
+  const serialized = serializeContextHashInput({
+    original: context.original,
+    ...(context.focus === undefined ? {} : { focus: context.focus }),
+    ...(context.corrected === undefined
+      ? {}
+      : { corrected: context.corrected }),
+    ...(context.answer === undefined ? {} : { answer: context.answer }),
+    ...(context.image === undefined
+      ? {}
+      : { imageSha256: context.image.sha256 }),
+  });
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(serialized),
+  );
+  const hexadecimal = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  if (context.hash !== `sha256:${hexadecimal}`) {
+    throw new TypeError(
+      "Context hash must match its canonical serialized content",
+    );
+  }
+}
+
 function contextsHaveSameIdentity(
   left: ContextRecord,
   right: ContextRecord,
@@ -365,7 +441,7 @@ function highWaterFromEvents(
 
 type ReadwriteStore<Name extends "events" | "clock"> = IDBPObjectStore<
   LedgerDatabase,
-  ArrayLike<"events" | "contexts" | "clock">,
+  ArrayLike<"events" | "contexts" | "clock" | "importReceipts">,
   Name,
   "readwrite"
 >;
@@ -710,6 +786,95 @@ export function structurallyEqual(
   );
 }
 
+interface PreparedCaptureWrite {
+  readonly events: readonly Event[];
+  readonly context: ContextRecord;
+}
+
+async function prepareImportedCaptureBatch(
+  writes: readonly CaptureWrite[],
+  receipt: CoachImportReceipt,
+): Promise<{
+  readonly writes: readonly PreparedCaptureWrite[];
+  readonly receipt: CoachImportReceipt;
+}> {
+  if (!Array.isArray(writes) || writes.length === 0) {
+    throw new TypeError(
+      "appendImportedCaptureBatch requires at least one capture write",
+    );
+  }
+  assertCoachImportReceipt(receipt);
+
+  const storageReceipt = structuredClone(receipt);
+  assertCoachImportReceipt(storageReceipt);
+  const preparedWrites: PreparedCaptureWrite[] = [];
+  const captureIds = new Set<string>();
+  for (const write of writes) {
+    if (typeof write !== "object" || write === null) {
+      throw new TypeError("Capture write must be an object");
+    }
+    if (!Array.isArray(write.events)) {
+      throw new TypeError("Capture write events must be an array");
+    }
+    assertValidCapture(write.events, write.context);
+
+    const storageEvents: Event[] = structuredClone(write.events);
+    const storageContext: ContextRecord = structuredClone(write.context);
+    assertValidCapture(storageEvents, storageContext);
+    await assertValidContextImageDigest(storageContext);
+    await assertValidContextHash(storageContext);
+
+    const captureCreated = storageEvents.find(
+      (event): event is CaptureCreatedEvent => event.kind === "capture_created",
+    )!;
+    if (captureIds.has(captureCreated.captureId)) {
+      throw new TypeError(
+        `Coach import batch repeats captureId ${captureCreated.captureId}`,
+      );
+    }
+    captureIds.add(captureCreated.captureId);
+    preparedWrites.push({ events: storageEvents, context: storageContext });
+  }
+
+  const receiptCaptureIds = new Set(storageReceipt.captureIds);
+  if (
+    receiptCaptureIds.size !== captureIds.size ||
+    [...captureIds].some((captureId) => !receiptCaptureIds.has(captureId))
+  ) {
+    throw new TypeError(
+      "Coach import receipt captureIds must exactly reference the imported captures",
+    );
+  }
+
+  return { writes: preparedWrites, receipt: storageReceipt };
+}
+
+function prepareDiscardBatch(
+  writes: readonly DiscardWrite[],
+): readonly DiscardWrite[] {
+  if (!Array.isArray(writes)) {
+    throw new TypeError("appendDiscardBatch writes must be an array");
+  }
+  return writes.map((write) => {
+    if (typeof write !== "object" || write === null) {
+      throw new TypeError("Discard write must be an object");
+    }
+    if (!isNonEmptyString(write.contextHash)) {
+      throw new TypeError("appendDiscard contextHash must be non-empty");
+    }
+    if (write.event.kind !== "capture_discarded") {
+      throw new TypeError("appendDiscard requires a capture_discarded event");
+    }
+    assertValidEvent(write.event);
+    const storageEvent = structuredClone(write.event);
+    if (storageEvent.kind !== "capture_discarded") {
+      throw new TypeError("appendDiscard requires a capture_discarded event");
+    }
+    assertValidEvent(storageEvent);
+    return { event: storageEvent, contextHash: write.contextHash };
+  });
+}
+
 async function structurallyEqualWithTransactionKeepAlive(
   left: unknown,
   right: unknown,
@@ -748,7 +913,13 @@ async function structurallyEqualWithTransactionKeepAlive(
   return result;
 }
 
-class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
+class IndexedDBLedgerRepository
+  implements
+    LedgerRepository,
+    LedgerRestorer,
+    CoachImportRepository,
+    LedgerBackupReader
+{
   readonly #database: IDBPDatabase<LedgerDatabase>;
 
   constructor(database: IDBPDatabase<LedgerDatabase>) {
@@ -917,6 +1088,112 @@ class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
     }
   }
 
+  async appendImportedCaptureBatch(
+    writes: readonly CaptureWrite[],
+    receipt: CoachImportReceipt,
+  ): Promise<"imported" | "already-imported"> {
+    const prepared = await prepareImportedCaptureBatch(writes, receipt);
+    const transaction = this.#database.transaction(
+      ["events", "contexts", "clock", "importReceipts"],
+      "readwrite",
+    );
+
+    try {
+      const eventStore = transaction.objectStore("events");
+      const contextStore = transaction.objectStore("contexts");
+      const receiptStore = transaction.objectStore("importReceipts");
+      const existingReceipt = await receiptStore.get(prepared.receipt.digest);
+      if (existingReceipt !== undefined) {
+        assertCoachImportReceipt(existingReceipt);
+        await transaction.done;
+        return "already-imported";
+      }
+
+      const allEvents: Event[] = [];
+      for (const write of prepared.writes) {
+        allEvents.push(...write.events);
+        for (const storageEvent of write.events) {
+          const existingEvent = await eventStore.get(storageEvent.eventId);
+          if (existingEvent === undefined) {
+            await eventStore.put(storageEvent);
+          } else if (
+            !(await structurallyEqualWithTransactionKeepAlive(
+              existingEvent,
+              storageEvent,
+              () => eventStore.get(storageEvent.eventId),
+            ))
+          ) {
+            throw new Error(
+              `eventId ${storageEvent.eventId} already exists with different content`,
+            );
+          }
+        }
+
+        const existingContext = await contextStore.get(write.context.hash);
+        if (existingContext === undefined) {
+          await contextStore.put(write.context);
+        } else {
+          assertValidContext(existingContext);
+          if (!contextsHaveSameIdentity(existingContext, write.context)) {
+            throw new Error(
+              `context hash ${write.context.hash} already exists with different content`,
+            );
+          }
+        }
+      }
+
+      await promoteAllocatorHighWater(
+        eventStore,
+        transaction.objectStore("clock"),
+        allEvents,
+      );
+      await receiptStore.put(prepared.receipt);
+      await transaction.done;
+      return "imported";
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {
+        // The transaction may already have aborted because a request failed.
+      }
+      try {
+        await transaction.done;
+      } catch {
+        // Preserve the operation error rather than the follow-up abort error.
+      }
+      throw error;
+    }
+  }
+
+  async hasImportReceipt(digest: string): Promise<boolean> {
+    assertCoachImportDigest(digest);
+    const transaction = this.#database.transaction(
+      "importReceipts",
+      "readonly",
+    );
+    try {
+      const receipt = await transaction.objectStore("importReceipts").get(digest);
+      await transaction.done;
+      if (receipt === undefined) {
+        return false;
+      }
+      assertCoachImportReceipt(receipt);
+      return true;
+    } catch (error) {
+      try {
+        transaction.abort();
+      } catch {
+        // A readonly transaction may already have completed or failed.
+      }
+      try {
+        await transaction.done;
+      } catch {
+        // Preserve the read or validation error.
+      }
+      throw error;
+    }
+  }
+
   async appendEvents(events: readonly Event[]): Promise<void> {
     if (events.length === 0) {
       return;
@@ -979,13 +1256,12 @@ class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
     event: CaptureDiscardedEvent,
     contextHash: string,
   ): Promise<void> {
-    if (!isNonEmptyString(contextHash)) {
-      throw new TypeError("appendDiscard contextHash must be non-empty");
-    }
-    if (event.kind !== "capture_discarded") {
-      throw new TypeError("appendDiscard requires a capture_discarded event");
-    }
-    assertValidEvent(event);
+    await this.appendDiscardBatch([{ event, contextHash }]);
+  }
+
+  async appendDiscardBatch(writes: readonly DiscardWrite[]): Promise<void> {
+    const prepared = prepareDiscardBatch(writes);
+    if (prepared.length === 0) return;
 
     const transaction = this.#database.transaction(
       ["events", "contexts", "clock"],
@@ -993,48 +1269,70 @@ class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
     );
 
     try {
-      const storageEvent = structuredClone(event);
-      if (storageEvent.kind !== "capture_discarded") {
-        throw new TypeError(
-          "appendDiscard requires a capture_discarded event",
-        );
-      }
-      assertValidEvent(storageEvent);
-
       const eventStore = transaction.objectStore("events");
-      const existing = await eventStore.get(storageEvent.eventId);
-      if (existing === undefined) {
-        await eventStore.put(storageEvent);
-      } else if (
-        !(await structurallyEqualWithTransactionKeepAlive(
-          existing,
-          storageEvent,
-          () => eventStore.get(storageEvent.eventId),
-        ))
-      ) {
-        throw new Error(
-          `eventId ${storageEvent.eventId} already exists with different content`,
-        );
+      for (const write of prepared) {
+        const existing = await eventStore.get(write.event.eventId);
+        if (existing === undefined) {
+          await eventStore.put(write.event);
+        } else if (
+          !(await structurallyEqualWithTransactionKeepAlive(
+            existing,
+            write.event,
+            () => eventStore.get(write.event.eventId),
+          ))
+        ) {
+          throw new Error(
+            `eventId ${write.event.eventId} already exists with different content`,
+          );
+        }
       }
+
       const storedEvents = await eventStore.getAll();
+      const captureContextById = new Map<string, string>();
+      for (const stored of storedEvents) {
+        if (stored.kind === "capture_created") {
+          captureContextById.set(stored.captureId, stored.contextHash);
+        }
+      }
+      for (const write of prepared) {
+        const storedContextHash = captureContextById.get(write.event.captureId);
+        if (storedContextHash === undefined) {
+          throw new Error(
+            `captureId ${write.event.captureId} does not reference a stored capture`,
+          );
+        }
+        if (storedContextHash !== write.contextHash) {
+          throw new Error(
+            `captureId ${write.event.captureId} belongs to context ${storedContextHash}, not ${write.contextHash}`,
+          );
+        }
+      }
       const discardedCaptureIds = new Set(
         storedEvents
           .filter((stored) => stored.kind === "capture_discarded")
           .map((discard) => discard.captureId),
       );
-      const hasActiveContextReference = storedEvents.some(
-        (stored) =>
-          stored.kind === "capture_created" &&
-          stored.contextHash === contextHash &&
-          !discardedCaptureIds.has(stored.captureId),
+      const activeContextHashes = new Set(
+        storedEvents
+          .filter(
+            (stored): stored is CaptureCreatedEvent =>
+              stored.kind === "capture_created" &&
+              !discardedCaptureIds.has(stored.captureId),
+          )
+          .map((capture) => capture.contextHash),
       );
-      if (!hasActiveContextReference) {
-        await transaction.objectStore("contexts").delete(contextHash);
+      const contextStore = transaction.objectStore("contexts");
+      for (const contextHash of new Set(
+        prepared.map((write) => write.contextHash),
+      )) {
+        if (!activeContextHashes.has(contextHash)) {
+          await contextStore.delete(contextHash);
+        }
       }
       await promoteAllocatorHighWater(
         eventStore,
         transaction.objectStore("clock"),
-        [storageEvent],
+        prepared.map((write) => write.event),
       );
       await transaction.done;
     } catch (error) {
@@ -1064,17 +1362,19 @@ class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
     }
 
     const transaction = this.#database.transaction(
-      ["events", "contexts", "clock"],
+      ["events", "contexts", "clock", "importReceipts"],
       "readwrite",
     );
     try {
       const eventStore = transaction.objectStore("events");
       const contextStore = transaction.objectStore("contexts");
       const clockStore = transaction.objectStore("clock");
+      const receiptStore = transaction.objectStore("importReceipts");
       const counts = await Promise.all([
         eventStore.count(),
         contextStore.count(),
         clockStore.count(),
+        receiptStore.count(),
       ]);
       if (counts.some((count) => count !== 0)) {
         throw new Error("目标库非空，无法执行完整账本恢复");
@@ -1085,6 +1385,9 @@ class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
       }
       for (const context of prepared.contexts) {
         await contextStore.put(context);
+      }
+      for (const receipt of prepared.importReceipts) {
+        await receiptStore.put(receipt);
       }
       await clockStore.put({
         key: GLOBAL_CLOCK_KEY,
@@ -1150,6 +1453,38 @@ class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
     return { events, contexts };
   }
 
+  async readBackupSnapshot(): Promise<LedgerBackupSnapshot> {
+    const transaction = this.#database.transaction(
+      ["events", "contexts", "importReceipts"],
+      "readonly",
+    );
+    const [events, contexts, importReceipts] = await Promise.all([
+      transaction.objectStore("events").getAll(),
+      transaction.objectStore("contexts").getAll(),
+      transaction.objectStore("importReceipts").getAll(),
+    ]);
+    await transaction.done;
+
+    for (const receipt of importReceipts) {
+      assertCoachImportReceipt(receipt);
+    }
+    events.sort((left, right) =>
+      left.eventId < right.eventId
+        ? -1
+        : left.eventId > right.eventId
+          ? 1
+          : 0,
+    );
+    contexts.sort((left, right) =>
+      left.hash < right.hash ? -1 : left.hash > right.hash ? 1 : 0,
+    );
+    importReceipts.sort((left, right) =>
+      left.digest < right.digest ? -1 : left.digest > right.digest ? 1 : 0,
+    );
+
+    return { events, contexts, importReceipts };
+  }
+
   close(): void {
     this.#database.close();
   }
@@ -1157,7 +1492,7 @@ class IndexedDBLedgerRepository implements LedgerRepository, LedgerRestorer {
 
 export async function openLedgerRepository(
   options: OpenLedgerRepositoryOptions = {},
-): Promise<LedgerRepository & LedgerRestorer> {
+): Promise<OpenedLedgerRepository> {
   const databaseName = options.dbName ?? "tenjin-ledger";
   let upgradeWasBlocked = false;
   let openedDatabase: IDBPDatabase<LedgerDatabase> | undefined;
@@ -1167,7 +1502,7 @@ export async function openLedgerRepository(
   });
   const opening = openDB<LedgerDatabase>(
     databaseName,
-    2,
+    3,
     {
       blocked() {
         upgradeWasBlocked = true;
@@ -1187,6 +1522,12 @@ export async function openLedgerRepository(
         }
         if (oldVersion < 2) {
           database.createObjectStore("clock", { keyPath: "key" });
+        }
+        if (
+          oldVersion < 3 &&
+          !database.objectStoreNames.contains("importReceipts")
+        ) {
+          database.createObjectStore("importReceipts", { keyPath: "digest" });
         }
       },
     },

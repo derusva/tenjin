@@ -7,6 +7,10 @@ import {
 
 import type { ContextImageMediaType, ContextRecord } from "./repository.js";
 import {
+  assertCoachImportReceipt,
+  type CoachImportReceipt,
+} from "./importReceipt.js";
+import {
   assertRestoreCommitRecord,
   isCanonicalDeviceId,
   isCanonicalUtcTimestamp,
@@ -16,6 +20,7 @@ import {
 export interface RestoreContextInput {
   readonly hash: string;
   readonly original: string;
+  readonly focus?: string;
   readonly corrected?: string;
   readonly answer?: string;
   readonly image?: {
@@ -31,6 +36,7 @@ export interface RestoreContextInput {
 export interface RestoreLedgerInput {
   readonly events: readonly Event[];
   readonly contexts: readonly RestoreContextInput[];
+  readonly importReceipts?: readonly CoachImportReceipt[];
   readonly globalHlc: HybridLogicalClock;
   readonly maxSeqByDevice: Readonly<Record<string, number>>;
   readonly forbiddenDeviceIds: readonly string[];
@@ -44,6 +50,7 @@ export interface LedgerRestorer {
 export interface PreparedRestoreLedger {
   readonly events: readonly Event[];
   readonly contexts: readonly ContextRecord[];
+  readonly importReceipts: readonly CoachImportReceipt[];
   readonly globalHlc: HybridLogicalClock;
   readonly maxSeqByDevice: readonly (readonly [string, number])[];
   readonly marker: RestoreCommitRecord;
@@ -54,6 +61,7 @@ const BARE_DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 const CONTEXT_FIELDS: readonly string[] = [
   "hash",
   "original",
+  "focus",
   "corrected",
   "answer",
   "image",
@@ -157,6 +165,9 @@ async function prepareContext(
     candidate.original,
     "restore context original",
   );
+  const focus = Object.hasOwn(candidate, "focus")
+    ? requireNonEmptyString(candidate.focus, "restore context focus")
+    : undefined;
   const corrected = Object.hasOwn(candidate, "corrected")
     ? requireNonEmptyString(candidate.corrected, "restore context corrected")
     : undefined;
@@ -216,6 +227,7 @@ async function prepareContext(
     new TextEncoder().encode(
       serializeContextHashInput({
         original,
+        ...(focus === undefined ? {} : { focus }),
         ...(corrected === undefined ? {} : { corrected }),
         ...(answer === undefined ? {} : { answer }),
         ...(imageSha256 === undefined ? {} : { imageSha256 }),
@@ -231,6 +243,7 @@ async function prepareContext(
   return {
     hash: candidate.hash,
     original,
+    ...(focus === undefined ? {} : { focus }),
     ...(corrected === undefined ? {} : { corrected }),
     ...(answer === undefined ? {} : { answer }),
     ...(image === undefined ? {} : { image }),
@@ -296,6 +309,12 @@ export async function prepareRestoreLedger(
   if (!Array.isArray(input.events) || !Array.isArray(input.contexts)) {
     throw new TypeError("restore events and contexts must be arrays");
   }
+  if (
+    Object.hasOwn(input, "importReceipts") &&
+    !Array.isArray(input.importReceipts)
+  ) {
+    throw new TypeError("restore importReceipts must be an array when present");
+  }
   if (!Array.isArray(input.forbiddenDeviceIds)) {
     throw new TypeError("restore forbiddenDeviceIds must be an array");
   }
@@ -356,6 +375,31 @@ export async function prepareRestoreLedger(
     contextHashes.add(context.hash);
   }
 
+  const availableCaptureIds = new Set(
+    events
+      .filter((event) => event.kind === "capture_created")
+      .map((event) => event.captureId),
+  );
+  const receiptDigests = new Set<string>();
+  const importReceipts: CoachImportReceipt[] = [];
+  for (const candidate of input.importReceipts ?? []) {
+    assertCoachImportReceipt(candidate);
+    const receipt = structuredClone(candidate);
+    assertCoachImportReceipt(receipt);
+    if (receiptDigests.has(receipt.digest)) {
+      throw new TypeError(`duplicate restore import receipt ${receipt.digest}`);
+    }
+    for (const captureId of receipt.captureIds) {
+      if (!availableCaptureIds.has(captureId)) {
+        throw new TypeError(
+          `restore import receipt references unknown captureId ${captureId}`,
+        );
+      }
+    }
+    receiptDigests.add(receipt.digest);
+    importReceipts.push(receipt);
+  }
+
   const marker: RestoreCommitRecord = {
     key: "restore-commit",
     type: "restore-commit",
@@ -367,6 +411,7 @@ export async function prepareRestoreLedger(
   return {
     events,
     contexts,
+    importReceipts,
     globalHlc: successorHlc(input.globalHlc),
     maxSeqByDevice,
     marker,

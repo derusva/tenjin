@@ -8,13 +8,14 @@ import {
   openLedgerRepository,
   type ContextRecord,
   type LedgerRepository,
+  type OpenedLedgerRepository,
 } from "./repository.js";
+import type { CoachImportReceipt } from "./importReceipt.js";
 import {
   RestoreCommitRecordError,
   type RestoreCommitRecord,
 } from "./restoreCommit.js";
 import type {
-  LedgerRestorer,
   RestoreContextInput,
   RestoreLedgerInput,
 } from "./restore.js";
@@ -23,6 +24,7 @@ interface InspectionDatabase extends DBSchema {
   events: { key: string; value: Event };
   contexts: { key: string; value: ContextRecord };
   clock: { key: string; value: unknown };
+  importReceipts: { key: string; value: unknown };
 }
 
 const databases = new Set<string>();
@@ -44,7 +46,7 @@ function databaseName(label: string): string {
 
 async function openRestoreRepository(
   name: string,
-): Promise<LedgerRepository & LedgerRestorer> {
+): Promise<OpenedLedgerRepository> {
   const repository = await openLedgerRepository({ dbName: name });
   repositories.add(repository);
   return repository;
@@ -61,6 +63,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 async function createContext(
   imageBytes?: Uint8Array,
+  focus?: string,
 ): Promise<RestoreContextInput> {
   const original = "手を打つ";
   const answer = "采取措施";
@@ -70,6 +73,7 @@ async function createContext(
     new TextEncoder().encode(
       serializeContextHashInput({
         original,
+        ...(focus === undefined ? {} : { focus }),
         answer,
         ...(imageSha256 === undefined ? {} : { imageSha256 }),
       }),
@@ -78,6 +82,7 @@ async function createContext(
   return {
     hash: `sha256:${hash}`,
     original,
+    ...(focus === undefined ? {} : { focus }),
     answer,
     ...(imageBytes === undefined
       ? {}
@@ -141,20 +146,27 @@ async function inspect(name: string): Promise<{
   readonly events: readonly Event[];
   readonly contexts: readonly ContextRecord[];
   readonly clock: readonly unknown[];
+  readonly importReceipts: readonly unknown[];
 }> {
-  const database = await openDB<InspectionDatabase>(name, 2);
+  const database = await openDB<InspectionDatabase>(name);
   try {
     const transaction = database.transaction(
-      ["events", "contexts", "clock"],
+      ["events", "contexts", "clock", "importReceipts"],
       "readonly",
     );
     const result = await Promise.all([
       transaction.objectStore("events").getAll(),
       transaction.objectStore("contexts").getAll(),
       transaction.objectStore("clock").getAll(),
+      transaction.objectStore("importReceipts").getAll(),
     ]);
     await transaction.done;
-    return { events: result[0], contexts: result[1], clock: result[2] };
+    return {
+      events: result[0],
+      contexts: result[1],
+      clock: result[2],
+      importReceipts: result[3],
+    };
   } finally {
     database.close();
   }
@@ -162,10 +174,10 @@ async function inspect(name: string): Promise<{
 
 async function seed(
   name: string,
-  store: "events" | "contexts" | "clock",
+  store: "events" | "contexts" | "clock" | "importReceipts",
   value: unknown,
 ): Promise<void> {
-  const database = await openDB<InspectionDatabase>(name, 2);
+  const database = await openDB<InspectionDatabase>(name);
   try {
     const transaction = database.transaction(store, "readwrite");
     await transaction.objectStore(store).put(value as never);
@@ -184,7 +196,12 @@ describe("restoreLedger", () => {
       await expect(
         repository.restoreLedger(await validInput(), newDeviceId),
       ).rejects.toThrow(/newDeviceId.*canonical/i);
-      expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+      expect(await inspect(name)).toEqual({
+        events: [],
+        contexts: [],
+        clock: [],
+        importReceipts: [],
+      });
     },
   );
 
@@ -194,7 +211,12 @@ describe("restoreLedger", () => {
     await expect(
       repository.restoreLedger(await validInput(), "device-exporter"),
     ).rejects.toThrow(/forbidden/i);
-    expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
   });
 
   it("rejects an event device even if a malformed caller omits it from forbiddenDeviceIds", async () => {
@@ -204,7 +226,12 @@ describe("restoreLedger", () => {
     await expect(
       repository.restoreLedger(input, "device-source"),
     ).rejects.toThrow(/event device/i);
-    expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
   });
 
   it("rejects a context hash mismatch before writing", async () => {
@@ -218,7 +245,12 @@ describe("restoreLedger", () => {
     await expect(
       repository.restoreLedger(tampered, "device-new"),
     ).rejects.toThrow(/context sha256.*serialized content/i);
-    expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
   });
 
   it("rejects image bytes whose digest does not match before writing", async () => {
@@ -241,7 +273,12 @@ describe("restoreLedger", () => {
     await expect(
       repository.restoreLedger(tampered, "device-new"),
     ).rejects.toThrow(/image sha256.*Blob content/i);
-    expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
   });
 
   it("rejects an invalid core event before writing", async () => {
@@ -258,10 +295,15 @@ describe("restoreLedger", () => {
         "device-new",
       ),
     ).rejects.toThrow(/Invalid restore event/i);
-    expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
   });
 
-  it.each(["events", "contexts", "clock"] as const)(
+  it.each(["events", "contexts", "clock", "importReceipts"] as const)(
     "rejects when only the %s store is non-empty and changes nothing",
     async (store) => {
       const name = databaseName(`nonempty-${store}`);
@@ -276,11 +318,17 @@ describe("restoreLedger", () => {
                 original: "seed",
                 createdAt: "2026-08-10T00:00:00.000Z",
               }
-            : {
-                key: "global-hlc",
-                type: "global-hlc",
-                hlc: { wallTime: 1, counter: 0 },
-              };
+            : store === "clock"
+              ? {
+                  key: "global-hlc",
+                  type: "global-hlc",
+                  hlc: { wallTime: 1, counter: 0 },
+                }
+              : {
+                  digest: `sha256:${"ab".repeat(32)}`,
+                  importedAt: "2026-08-10T00:00:00.000Z",
+                  captureIds: ["capture-seed"],
+                };
       await seed(name, store, seedValue);
       const before = await inspect(name);
       await expect(
@@ -301,6 +349,7 @@ describe("restoreLedger", () => {
     const state = await inspect(name);
     expect(state.events).toEqual(input.events);
     expect(state.contexts).toHaveLength(1);
+    expect(state.importReceipts).toEqual([]);
     const image = state.contexts[0]!.image!;
     expect(new Uint8Array(await image.blob.arrayBuffer())).toEqual(imageBytes);
     expect(image.blob.type).toBe("image/png");
@@ -339,6 +388,69 @@ describe("restoreLedger", () => {
     expect(await reopened.readRestoreCommit()).toEqual(marker);
   });
 
+  it("atomically restores a focused context and its Coach import receipt", async () => {
+    const name = databaseName("focused-receipt-success");
+    const repository = await openRestoreRepository(name);
+    const storedContext = await createContext(undefined, "手を打つ");
+    const event = captureEvent(
+      "device-source",
+      1,
+      100,
+      storedContext.hash,
+      "capture-coach",
+    );
+    const receipt = {
+      digest: `sha256:${"ab".repeat(32)}`,
+      importedAt: "2026-08-10T10:00:01.000Z",
+      captureIds: ["capture-coach"],
+    } as const satisfies CoachImportReceipt;
+    const input: RestoreLedgerInput = {
+      events: [event],
+      contexts: [storedContext],
+      importReceipts: [receipt],
+      globalHlc: event.hlc,
+      maxSeqByDevice: { "device-source": 1 },
+      forbiddenDeviceIds: ["device-source"],
+    };
+
+    await repository.restoreLedger(input, "device-new");
+
+    expect(await repository.readBackupSnapshot()).toMatchObject({
+      events: [event],
+      contexts: [expect.objectContaining({ focus: "手を打つ" })],
+      importReceipts: [receipt],
+    });
+  });
+
+  it("rejects receipt-only restore input before writing", async () => {
+    const name = databaseName("receipt-only-input");
+    const repository = await openRestoreRepository(name);
+    const input: RestoreLedgerInput = {
+      events: [],
+      contexts: [],
+      importReceipts: [
+        {
+          digest: `sha256:${"cd".repeat(32)}`,
+          importedAt: "2026-08-10T10:00:01.000Z",
+          captureIds: ["capture-absent"],
+        },
+      ],
+      globalHlc: { wallTime: 0, counter: 0 },
+      maxSeqByDevice: {},
+      forbiddenDeviceIds: [],
+    };
+
+    await expect(repository.restoreLedger(input, "device-new")).rejects.toThrow(
+      /receipt.*unknown captureId/i,
+    );
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
+  });
+
   it("rolls back all stores and the marker when a put fails mid-transaction", async () => {
     const name = databaseName("put-failure");
     const repository = await openRestoreRepository(name);
@@ -368,11 +480,16 @@ describe("restoreLedger", () => {
       repository.restoreLedger(await validInput(), "device-new"),
     ).rejects.toThrow("injected restore put failure after marker scheduling");
     expect(markerWasScheduled).toBe(true);
-    expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
     expect(await repository.readRestoreCommit()).toBeUndefined();
   });
 
-  it("rejects a second restore as non-empty and preserves all three stores", async () => {
+  it("rejects a second restore as non-empty and preserves all four stores", async () => {
     const name = databaseName("second-restore");
     const repository = await openRestoreRepository(name);
     const input = await validInput();
@@ -523,7 +640,12 @@ describe("restoreLedger", () => {
     await expect(
       repository.restoreLedger(input, "device-new"),
     ).rejects.toThrow(/clock.*exhausted/i);
-    expect(await inspect(name)).toEqual({ events: [], contexts: [], clock: [] });
+    expect(await inspect(name)).toEqual({
+      events: [],
+      contexts: [],
+      clock: [],
+      importReceipts: [],
+    });
   });
 
   it("rolls an exhausted counter into the next safe wall time", async () => {
