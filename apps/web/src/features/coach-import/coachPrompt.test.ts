@@ -18,13 +18,12 @@ const FROZEN_SETUP_PROMPT = [
   "1. 只整理本轮我实际没懂、追问过或确实值得留下的内容，共 0-3 条，目标 1-2 条；没有就输出空 items。",
   "2. 回复只能包含一个 json 代码块，围栏外不得有任何文字。",
   "3. schema 必须是 tenjin.coach-transfer/v1。",
-  "4. 每条只能有 type、focus、sourceExcerpt、answer，以及可选的 transferSentence。",
+  "4. 每条只能有 type、focus、sourceExcerpt、answer。",
   "5. type 固定为 lookup。",
   "6. focus 是可独立复习的最小完整语言单位，保留决定意义的助词、活用和句法槽位；能自然规范化才规范化。",
   "7. sourceExcerpt 必须是包含 focus 的原始日文句子。",
   "8. answer 只解释 focus 在该句中的实际含义，最多一两句，不得编造。",
-  "9. transferSentence 默认省略；只有本轮已经得到可靠的迁移例句时才提供。",
-  "10. 不得增加任何其他字段，必须使用合法 JSON、双引号且无尾逗号。",
+  "9. 不得增加任何其他字段，必须使用合法 JSON、双引号且无尾逗号。",
 ].join("\n");
 
 describe("Coach prompt", () => {
@@ -36,6 +35,7 @@ describe("Coach prompt", () => {
     expect(COACH_SETUP_PROMPT).toContain("逐句完整翻译");
     expect(COACH_SETUP_PROMPT).toContain("不得跳句");
     expect(COACH_SETUP_PROMPT).toContain("只额外展开 1-3 个");
+    expect(COACH_SETUP_PROMPT).not.toContain("transferSentence");
   });
 
   it("keeps the repair message limited to retransmitting valid JSON", () => {

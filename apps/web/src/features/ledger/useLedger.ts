@@ -1,6 +1,7 @@
 import {
   deriveLedger,
   type CaptureCreatedEvent,
+  type ItemCreatedEvent,
   type LedgerView,
   type LearningChannel,
 } from "@tenjin/core";
@@ -38,6 +39,10 @@ export interface SaveCaptureResult {
   readonly contextHash: string;
 }
 
+export interface ImportedCaptureResult extends SaveCaptureResult {
+  readonly itemId: string;
+}
+
 export interface CoachImportItemInput {
   readonly focus: string;
   readonly sourceExcerpt: string;
@@ -53,7 +58,7 @@ export interface ImportCoachBatchInput {
 export type ImportCoachBatchResult =
   | {
       readonly status: "imported";
-      readonly captures: readonly SaveCaptureResult[];
+      readonly captures: readonly ImportedCaptureResult[];
     }
   | {
       readonly status: "already-imported";
@@ -63,6 +68,7 @@ export type ImportCoachBatchResult =
 export interface UseLedgerOptions {
   readonly repository: LedgerRepository & Partial<CoachImportRepository>;
   readonly runtime: LedgerRuntime;
+  readonly writeGate?: { assertWritable(): void };
 }
 
 export interface UseLedgerResult {
@@ -83,7 +89,10 @@ export interface UseLedgerResult {
     result: VerificationResult,
   ): Promise<void>;
   discardCapture(captureId: string, contextHash: string): Promise<void>;
-  discardCaptureBatch(targets: readonly SaveCaptureResult[]): Promise<void>;
+  discardCaptureBatch(
+    targets: readonly SaveCaptureResult[],
+    importReceiptDigest?: string,
+  ): Promise<void>;
 }
 
 const EMPTY_SNAPSHOT: LedgerSnapshot = { events: [], contexts: [] };
@@ -149,6 +158,7 @@ function selectRecentEntries(snapshot: LedgerSnapshot): RecentEntry[] {
 export function useLedger({
   repository,
   runtime,
+  writeGate,
 }: UseLedgerOptions): UseLedgerResult {
   const [status, setStatus] = useState<LedgerStatus>("loading");
   const [error, setError] = useState<string | undefined>(undefined);
@@ -212,6 +222,7 @@ export function useLedger({
   async function saveCapture(
     command: CaptureCommand,
   ): Promise<SaveCaptureResult> {
+    writeGate?.assertWritable();
     const transaction = await runtime.createCapture(command);
     await repository.appendCapture(transaction.events, transaction.context);
     await refresh();
@@ -230,6 +241,7 @@ export function useLedger({
   async function importCoachBatch(
     input: ImportCoachBatchInput,
   ): Promise<ImportCoachBatchResult> {
+    writeGate?.assertWritable();
     if (repository.appendImportedCaptureBatch === undefined) {
       throw new Error("当前账本不支持 Coach 批量导入");
     }
@@ -248,18 +260,29 @@ export function useLedger({
         ...(item.image === undefined ? {} : { image: item.image }),
       })),
     );
-    const captures = transactions.map((transaction): SaveCaptureResult => {
-      const capture = transaction.events.find(
-        (event) => event.kind === "capture_created",
-      );
-      if (capture === undefined) {
-        throw new Error("capture transaction is missing capture_created");
-      }
-      return {
-        captureId: capture.captureId,
-        contextHash: capture.contextHash,
-      };
-    });
+    const captures = transactions.map(
+      (transaction): ImportedCaptureResult => {
+        const capture = transaction.events.find(
+          (event) => event.kind === "capture_created",
+        );
+        if (capture === undefined) {
+          throw new Error("capture transaction is missing capture_created");
+        }
+        const item = transaction.events.find(
+          (event): event is ItemCreatedEvent =>
+            event.kind === "item_created" &&
+            event.captureId === capture.captureId,
+        );
+        if (item === undefined) {
+          throw new Error("capture transaction is missing item_created");
+        }
+        return {
+          captureId: capture.captureId,
+          contextHash: capture.contextHash,
+          itemId: item.itemId,
+        };
+      },
+    );
     const importedAt = transactions[0]?.context.createdAt;
     if (importedAt === undefined) {
       throw new Error("Coach import batch did not create any captures");
@@ -284,6 +307,7 @@ export function useLedger({
     channel: LearningChannel,
     result: VerificationResult,
   ): Promise<void> {
+    writeGate?.assertWritable();
     const event = await runtime.createVerification(itemId, channel, result);
     await repository.appendEvents([event]);
     await refresh();
@@ -293,6 +317,7 @@ export function useLedger({
     captureId: string,
     contextHash: string,
   ): Promise<void> {
+    writeGate?.assertWritable();
     const event = await runtime.createDiscard(captureId);
     await repository.appendDiscard(event, contextHash);
     await refresh();
@@ -300,19 +325,24 @@ export function useLedger({
 
   async function discardCaptureBatch(
     targets: readonly SaveCaptureResult[],
+    importReceiptDigest?: string,
   ): Promise<void> {
+    writeGate?.assertWritable();
     if (repository.appendDiscardBatch === undefined) {
       throw new Error("当前账本不支持批量撤销");
     }
     const events = await runtime.createDiscardBatch(
       targets.map(({ captureId }) => captureId),
     );
-    await repository.appendDiscardBatch(
-      events.map((event, index) => ({
-        event,
-        contextHash: targets[index]!.contextHash,
-      })),
-    );
+    const writes = events.map((event, index) => ({
+      event,
+      contextHash: targets[index]!.contextHash,
+    }));
+    if (importReceiptDigest === undefined) {
+      await repository.appendDiscardBatch(writes);
+    } else {
+      await repository.appendDiscardBatch(writes, importReceiptDigest);
+    }
     await refresh();
   }
 

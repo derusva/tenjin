@@ -3,6 +3,7 @@ import type {
   LearningChannel,
 } from "@tenjin/core";
 import type {
+  CoachImportRepository,
   ContextImageRecord,
   LedgerRepository,
 } from "@tenjin/storage-indexeddb";
@@ -26,6 +27,13 @@ import {
   IMAGE_ONLY_CAPTURE_ORIGINAL,
   type CaptureCommand,
 } from "./features/capture/createCapture.js";
+import {
+  CoachImportView,
+  type CoachImportConfirmation,
+  type CoachImportConfirmationResult,
+  type CoachImportViewProps,
+} from "./features/coach-import/CoachImportView.js";
+import { CoachHelpView } from "./features/coach-import/CoachHelpView.js";
 import type {
   LedgerRuntime,
   VerificationResult,
@@ -39,13 +47,32 @@ import type { ReviewPresentation } from "./features/review/reviewQueue.js";
 import { SearchView } from "./features/search/SearchView.js";
 
 export interface AppProps {
-  readonly repository: LedgerRepository;
+  readonly repository: LedgerRepository & Partial<CoachImportRepository>;
   readonly runtime: LedgerRuntime;
+  readonly writeGate: { assertWritable(): void };
   readonly storagePersistence?: StoragePersistenceStatus;
   readonly prepareImage?: (file: File) => Promise<ContextImageRecord>;
+  readonly coachImportDependencies?: Pick<
+    CoachImportViewProps,
+    | "readClipboardText"
+    | "writeClipboardText"
+    | "digestTransfer"
+  >;
+  readonly backupRestoreActions?: {
+    readonly restoreSupported: boolean;
+    readonly restoreEligible: boolean;
+    readonly onExportBackup: () => Promise<void>;
+    readonly onRestoreBackup: (file: File) => Promise<void>;
+  };
 }
 
-type AppView = "record" | "review" | "search" | "data";
+type AppView =
+  | "record"
+  | "review"
+  | "search"
+  | "data"
+  | "coach-import"
+  | "coach-help";
 
 const NAVIGATION: readonly {
   readonly view: AppView;
@@ -61,16 +88,25 @@ const NAVIGATION: readonly {
 const UNDO_WINDOW_MS = 8_000;
 
 interface UndoToastState {
-  readonly target: SaveCaptureResult;
+  readonly source: "manual" | "coach";
+  readonly targets: readonly SaveCaptureResult[];
+  readonly importDigest?: `sha256:${string}`;
   readonly error?: string;
 }
 
-function isSameUndoTarget(
-  left: SaveCaptureResult,
-  right: SaveCaptureResult,
+function isSameUndoState(
+  left: UndoToastState,
+  right: UndoToastState,
 ): boolean {
   return (
-    left.captureId === right.captureId && left.contextHash === right.contextHash
+    left.source === right.source &&
+    left.importDigest === right.importDigest &&
+    left.targets.length === right.targets.length &&
+    left.targets.every(
+      (target, index) =>
+        target.captureId === right.targets[index]?.captureId &&
+        target.contextHash === right.targets[index]?.contextHash,
+    )
   );
 }
 
@@ -96,15 +132,22 @@ const STORAGE_PERSISTENCE_COPY: Readonly<
 export function App({
   repository,
   runtime,
+  writeGate,
   storagePersistence = "unsupported",
   prepareImage,
+  coachImportDependencies,
+  backupRestoreActions,
 }: AppProps) {
-  const ledger = useLedger({ repository, runtime });
+  const ledger = useLedger({ repository, runtime, writeGate });
   const [currentView, setCurrentView] = useState<AppView>("record");
   const [reviewItems, setReviewItems] = useState<readonly ReviewPresentation[]>(
     [],
   );
   const [reviewSessionKey, setReviewSessionKey] = useState(0);
+  const [lastCoachReviewItemIds, setLastCoachReviewItemIds] = useState<
+    readonly string[]
+  >([]);
+  const [coachImportResetVersion, setCoachImportResetVersion] = useState(0);
   const [captureDraft, setCaptureDraft] = useState<CaptureDraft>({
     captureType: "lookup",
     original: "",
@@ -117,12 +160,22 @@ export function App({
   const [reviewSaving, setReviewSaving] = useState(false);
   const [undoState, setUndoState] = useState<UndoToastState | undefined>();
   const [undoing, setUndoing] = useState(false);
+  const [backupOperation, setBackupOperation] = useState<
+    "idle" | "exporting" | "restoring"
+  >("idle");
+  const [backupMessage, setBackupMessage] = useState<
+    { readonly kind: "status" | "error"; readonly text: string } | undefined
+  >();
   const undoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
   const mounted = useRef(false);
   const captureSavingRef = useRef(false);
   const reviewSavingRef = useRef(false);
+  const backupOperationRef = useRef<"idle" | "exporting" | "restoring">(
+    "idle",
+  );
+  const mainRef = useRef<HTMLElement>(null);
   const recentChannels = new Map<string, LearningChannel>();
   for (const event of ledger.snapshot.events) {
     if (event.kind === "capture_created") {
@@ -144,6 +197,12 @@ export function App({
     };
   }, []);
 
+  useEffect(() => {
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    mainRef.current?.focus({ preventScroll: true });
+  }, [currentView]);
+
   function clearUndoTimer() {
     if (undoTimer.current !== undefined) {
       clearTimeout(undoTimer.current);
@@ -151,12 +210,31 @@ export function App({
     }
   }
 
-  function openView(nextView: AppView) {
-    if (captureSavingRef.current || reviewSavingRef.current) {
+  function showUndo(next: UndoToastState) {
+    clearUndoTimer();
+    setUndoState(next);
+    undoTimer.current = setTimeout(() => {
+      undoTimer.current = undefined;
+      setUndoState((current) =>
+        current !== undefined && isSameUndoState(current, next)
+          ? undefined
+          : current,
+      );
+    }, UNDO_WINDOW_MS);
+  }
+
+  function openView(nextView: AppView, preferredItemIds?: readonly string[]) {
+    if (captureSavingRef.current || reviewSavingRef.current || undoing) {
       return;
     }
     if (nextView === "review") {
-      setReviewItems([...ledger.reviewItems]);
+      clearUndoTimer();
+      setUndoState(undefined);
+      const preferred = new Set(preferredItemIds ?? []);
+      setReviewItems([
+        ...ledger.reviewItems.filter((item) => preferred.has(item.itemId)),
+        ...ledger.reviewItems.filter((item) => !preferred.has(item.itemId)),
+      ]);
       setReviewSessionKey((key) => key + 1);
     }
     setCurrentView(nextView);
@@ -174,16 +252,46 @@ export function App({
         return;
       }
 
-      clearUndoTimer();
-      setUndoState({ target: result });
-      undoTimer.current = setTimeout(() => {
-        undoTimer.current = undefined;
-        setUndoState((current) =>
-          current !== undefined && isSameUndoTarget(current.target, result)
-            ? undefined
-            : current,
+      showUndo({ source: "manual", targets: [result] });
+    } finally {
+      captureSavingRef.current = false;
+      if (mounted.current) {
+        setCaptureSaving(false);
+      }
+    }
+  }
+
+  async function importCoachBatch(
+    confirmation: CoachImportConfirmation,
+  ): Promise<CoachImportConfirmationResult> {
+    if (captureSavingRef.current) {
+      throw new Error("记录仍在保存");
+    }
+    captureSavingRef.current = true;
+    setCaptureSaving(true);
+    try {
+      const result = await ledger.importCoachBatch({
+        digest: confirmation.digest,
+        items: confirmation.selectedItems.map((item, index) => ({
+          focus: item.focus,
+          sourceExcerpt: item.sourceExcerpt,
+          answer: item.answer,
+          ...(confirmation.imageTarget?.selectedItemIndex === index
+            ? { image: confirmation.imageTarget.image }
+            : {}),
+        })),
+      });
+      if (mounted.current && result.status === "imported") {
+        setLastCoachReviewItemIds(
+          result.captures.map((capture) => capture.itemId),
         );
-      }, UNDO_WINDOW_MS);
+        showUndo({
+          source: "coach",
+          targets: result.captures,
+          importDigest: confirmation.digest,
+        });
+      }
+      return { status: result.status };
     } finally {
       captureSavingRef.current = false;
       if (mounted.current) {
@@ -197,22 +305,37 @@ export function App({
       return;
     }
 
-    const target = undoState.target;
+    const target = undoState;
     clearUndoTimer();
     setUndoState((current) =>
-      current !== undefined && isSameUndoTarget(current.target, target)
-        ? { target: current.target }
+      current !== undefined && isSameUndoState(current, target)
+        ? {
+            source: current.source,
+            targets: current.targets,
+            ...(current.importDigest === undefined
+              ? {}
+              : { importDigest: current.importDigest }),
+          }
         : current,
     );
     setUndoing(true);
     try {
-      await ledger.discardCapture(
-        target.captureId,
-        target.contextHash,
-      );
+      if (target.source === "coach") {
+        await ledger.discardCaptureBatch(target.targets, target.importDigest);
+        if (mounted.current) {
+          setLastCoachReviewItemIds([]);
+          setCoachImportResetVersion((version) => version + 1);
+        }
+      } else {
+        const capture = target.targets[0];
+        if (capture === undefined) {
+          throw new Error("没有可撤销的记录");
+        }
+        await ledger.discardCapture(capture.captureId, capture.contextHash);
+      }
       if (mounted.current) {
         setUndoState((current) =>
-          current !== undefined && isSameUndoTarget(current.target, target)
+          current !== undefined && isSameUndoState(current, target)
             ? undefined
             : current,
         );
@@ -221,9 +344,13 @@ export function App({
       if (mounted.current) {
         const message = error instanceof Error ? error.message : String(error);
         setUndoState((current) =>
-          current !== undefined && isSameUndoTarget(current.target, target)
+          current !== undefined && isSameUndoState(current, target)
             ? {
-                target: current.target,
+                source: current.source,
+                targets: current.targets,
+                ...(current.importDigest === undefined
+                  ? {}
+                  : { importDigest: current.importDigest }),
                 error: `撤销失败：${message}。请重试。`,
               }
             : current,
@@ -256,7 +383,64 @@ export function App({
     }
   }
 
-  const navigationLocked = captureSaving || reviewSaving;
+  async function exportBackup(): Promise<void> {
+    if (
+      backupRestoreActions === undefined ||
+      backupOperationRef.current !== "idle"
+    ) {
+      return;
+    }
+    backupOperationRef.current = "exporting";
+    setBackupOperation("exporting");
+    setBackupMessage(undefined);
+    try {
+      await backupRestoreActions.onExportBackup();
+      if (mounted.current) {
+        setBackupMessage({ kind: "status", text: "完整备份已下载" });
+      }
+    } catch (error) {
+      if (mounted.current) {
+        const message = error instanceof Error ? error.message : String(error);
+        setBackupMessage({ kind: "error", text: `导出失败：${message}` });
+      }
+    } finally {
+      backupOperationRef.current = "idle";
+      if (mounted.current) setBackupOperation("idle");
+    }
+  }
+
+  async function restoreBackup(file: File): Promise<void> {
+    if (
+      backupRestoreActions === undefined ||
+      backupOperationRef.current !== "idle"
+    ) {
+      return;
+    }
+    backupOperationRef.current = "restoring";
+    setBackupOperation("restoring");
+    setBackupMessage(undefined);
+    try {
+      await backupRestoreActions.onRestoreBackup(file);
+      if (mounted.current) {
+        setBackupMessage({ kind: "status", text: "恢复完成，正在重新打开…" });
+      }
+    } catch (error) {
+      if (mounted.current) {
+        const message = error instanceof Error ? error.message : String(error);
+        setBackupMessage({ kind: "error", text: `恢复失败：${message}` });
+      }
+      backupOperationRef.current = "idle";
+      if (mounted.current) setBackupOperation("idle");
+    }
+  }
+
+  const navigationLocked =
+    captureSaving || reviewSaving || undoing || backupOperation !== "idle";
+  const restoreBlocked =
+    backupRestoreActions !== undefined &&
+    (!backupRestoreActions.restoreEligible ||
+      ledger.snapshot.events.length > 0 ||
+      ledger.snapshot.contexts.length > 0);
 
   let content;
   if (ledger.status === "loading") {
@@ -295,6 +479,21 @@ export function App({
         onBack={() => openView("record")}
       />
     );
+  } else if (currentView === "coach-import") {
+    content = null;
+  } else if (currentView === "coach-help") {
+    content = (
+      <CoachHelpView
+        onBack={() => openView("record")}
+        onStartImport={() => openView("coach-import")}
+        {...(coachImportDependencies?.writeClipboardText === undefined
+          ? {}
+          : {
+              writeClipboardText:
+                coachImportDependencies.writeClipboardText,
+            })}
+      />
+    );
   } else if (currentView === "data") {
     content = (
       <section className="utility-view data-view" aria-labelledby="data-title">
@@ -306,6 +505,79 @@ export function App({
           <p>{STORAGE_PERSISTENCE_COPY[storagePersistence]}</p>
           <p>本地数据仍可能被浏览器或系统清理，持久化也不代表绝对安全。</p>
         </div>
+        {backupRestoreActions === undefined ? null : (
+          <section
+            className="backup-restore-panel"
+            aria-labelledby="backup-restore-title"
+          >
+            <div>
+              <h2 id="backup-restore-title">备份与恢复</h2>
+              <p>
+                完整备份会带走全部原文、图片原始字节和 Coach 导入台账。恢复只写入完全空的本地账本。
+              </p>
+            </div>
+            <div className="backup-restore-actions">
+              <button
+                type="button"
+                disabled={backupOperation !== "idle"}
+                onClick={() => void exportBackup()}
+              >
+                {backupOperation === "exporting" ? "正在导出…" : "导出完整备份"}
+              </button>
+              <label
+                className={
+                  backupOperation !== "idle" ||
+                  !backupRestoreActions.restoreSupported ||
+                  restoreBlocked
+                    ? "file-action is-disabled"
+                    : "file-action"
+                }
+              >
+                <span>
+                  {backupOperation === "restoring" ? "正在恢复…" : "从备份恢复"}
+                </span>
+                <input
+                  aria-label="选择 Tenjin 备份文件"
+                  type="file"
+                  accept=".tenjin,application/octet-stream,application/zip"
+                  disabled={
+                    backupOperation !== "idle" ||
+                    !backupRestoreActions.restoreSupported ||
+                    restoreBlocked
+                  }
+                  onChange={(event) => {
+                    const input = event.currentTarget;
+                    const file = input.files?.[0];
+                    if (file !== undefined) {
+                      void restoreBackup(file).finally(() => {
+                        input.value = "";
+                      });
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            {!backupRestoreActions.restoreSupported ? (
+              <p className="backup-note">
+                此浏览器缺少恢复所需的多标签写锁；仍可导出备份。
+              </p>
+            ) : restoreBlocked ? (
+              <p className="backup-note">
+                当前本地账本并非完全空白；为防止合并污染，恢复入口已锁定。
+              </p>
+            ) : (
+              <p className="backup-note">恢复成功后 Tenjin 会重新加载并启用新设备身份。</p>
+            )}
+            {backupMessage === undefined ? null : (
+              <p
+                role={backupMessage.kind === "error" ? "alert" : "status"}
+                className={`backup-message ${backupMessage.kind}`}
+              >
+                {backupMessage.text}
+              </p>
+            )}
+          </section>
+        )}
       </section>
     );
   } else {
@@ -315,6 +587,28 @@ export function App({
           <h1 className="wordmark">Tenjin</h1>
           <p className="record-question">今天遇到了什么？</p>
         </header>
+        <section className="coach-entry" aria-labelledby="coach-entry-title">
+          <div>
+            <h2 id="coach-entry-title">截图先交给 Coach</h2>
+            <p>逐句看懂后，把整理出的 1–3 个学习点一次导入。</p>
+          </div>
+          <div className="coach-entry-actions">
+            <button
+              type="button"
+              disabled={navigationLocked}
+              onClick={() => openView("coach-import")}
+            >
+              从 Coach 导入
+            </button>
+            <button
+              type="button"
+              disabled={navigationLocked}
+              onClick={() => openView("coach-help")}
+            >
+              怎么用 Coach
+            </button>
+          </div>
+        </section>
         <CaptureComposer
           draft={captureDraft}
           onDraftChange={setCaptureDraft}
@@ -399,7 +693,7 @@ export function App({
 
   return (
     <div className="app-shell">
-      <main className="app-main">
+      <main ref={mainRef} className="app-main" tabIndex={-1}>
         {ledger.status === "ready" && ledger.error !== undefined ? (
           <aside className="ledger-warning" role="alert">
             <p>
@@ -412,6 +706,16 @@ export function App({
           </aside>
         ) : null}
         {content}
+        <div hidden={currentView !== "coach-import"}>
+          <CoachImportView
+            onConfirm={importCoachBatch}
+            onBack={() => openView("record")}
+            onReview={() => openView("review", lastCoachReviewItemIds)}
+            resetCompletedImportVersion={coachImportResetVersion}
+            {...(prepareImage === undefined ? {} : { prepareImage })}
+            {...coachImportDependencies}
+          />
+        </div>
       </main>
       {undoState === undefined ? null : (
         <aside
@@ -419,7 +723,12 @@ export function App({
           role={undoState.error === undefined ? "status" : "alert"}
           aria-live={undoState.error === undefined ? "polite" : "assertive"}
         >
-          <span>{undoState.error ?? "已保存"}</span>
+          <span>
+            {undoState.error ??
+              (undoState.source === "coach"
+                ? `已导入 ${undoState.targets.length} 条`
+                : "已保存")}
+          </span>
           <button type="button" disabled={undoing} onClick={undoCapture}>
             <UndoIcon aria-hidden="true" size={18} />
             <span>{undoState.error === undefined ? "撤销" : "重试撤销"}</span>

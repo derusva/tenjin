@@ -28,7 +28,6 @@ const SECOND_ITEM = {
   focus: "パッとしない",
   sourceExcerpt: "パッとしない生徒がいましてねぇ。",
   answer: "不起眼、平平无奇。",
-  transferSentence: "今日はどうもパッとしない。",
 } as const;
 
 function coachJson(items: readonly unknown[] = [FIRST_ITEM]): string {
@@ -198,7 +197,7 @@ describe("CoachImportView", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
-  it("edits the retained item, omits a blank transfer sentence, and drops a deselected item", async () => {
+  it("edits the retained item and drops a deselected item", async () => {
     const user = userEvent.setup();
     const { onConfirm } = await pasteAndPreview(
       user,
@@ -219,10 +218,6 @@ describe("CoachImportView", () => {
     await user.type(
       screen.getByRole("textbox", { name: "第 1 条解释" }),
       " 已采取措施。 ",
-    );
-    await user.type(
-      screen.getByRole("textbox", { name: "第 1 条迁移句（可选）" }),
-      "   ",
     );
     await user.click(screen.getByRole("checkbox", { name: "导入第 2 条" }));
     await user.click(screen.getByRole("button", { name: "确认导入 1 条" }));
@@ -363,7 +358,51 @@ describe("CoachImportView", () => {
     expect(await screen.findByRole("status")).toHaveTextContent(
       "已经导入过",
     );
+    expect(
+      screen.queryByRole("button", { name: "现在复习" }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认导入 1 条" })).toBeDisabled();
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns an imported preview to a confirmable state after batch undo", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn(imported);
+    const { rerender } = render(
+      <CoachImportView
+        onConfirm={onConfirm}
+        digestTransfer={async () => DIGEST}
+        onReview={() => undefined}
+        resetCompletedImportVersion={0}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", {
+        name: /Coach JSON；自动读取失败时/,
+      }),
+      { target: { value: coachJson() } },
+    );
+    await user.click(screen.getByRole("button", { name: "预览输入内容" }));
+    await user.click(screen.getByRole("button", { name: "确认导入 1 条" }));
+    expect(await screen.findByText("已导入 1 条")).toBeInTheDocument();
+
+    rerender(
+      <CoachImportView
+        onConfirm={onConfirm}
+        digestTransfer={async () => DIGEST}
+        onReview={() => undefined}
+        resetCompletedImportVersion={1}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("已导入 1 条")).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "现在复习" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: "确认导入 1 条" }),
+      ).toBeEnabled();
+    });
   });
 });

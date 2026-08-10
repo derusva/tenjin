@@ -38,6 +38,9 @@ importers:
       '@tenjin/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@tenjin/exchange':
+        specifier: workspace:*
+        version: link:../../packages/exchange
       '@tenjin/storage-indexeddb':
         specifier: workspace:*
         version: link:../../packages/storage-indexeddb
@@ -51,9 +54,6 @@ importers:
         specifier: ^19.2.7
         version: 19.2.7(react@19.2.7)
     devDependencies:
-      '@tenjin/exchange':
-        specifier: workspace:*
-        version: link:../../packages/exchange
       '@testing-library/jest-dom':
         specifier: ^6.9.1
         version: 6.9.1

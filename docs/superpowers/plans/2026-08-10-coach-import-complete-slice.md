@@ -14,6 +14,8 @@
 
 This plan supersedes the user-operated Stage 0 ritual. On 2026-08-10 the owner explicitly chose the one-time complete route and accepted the irreversible DB v3, focus identity, and package-schema v2 changes. The user is not asked to collect JSON in Notes, count batches, or manually re-enter Coach output. Format instability is handled by a strict parser plus a repair message; semantic mistakes are handled in the preview. Real usage begins only after the complete slice is deployed.
 
+**2026-08-11 implementation calibration:** `transferSentence` is removed from the active v1 contract. It was not persisted, did not participate in review, and added clipboard and preview noise without user value. v1 accepts only `type`, `focus`, `sourceExcerpt`, and `answer`; a future transfer probe requires a new contract version and fresh evidence.
+
 The implementation may use multiple commits, but GitHub Pages must not expose a partial path. The record-page entry point is added only in the final UI task, after A1 restore, atomic import, receipts, backup round-trip, and review integration are green.
 
 The parser accepts exactly two transport envelopes because ChatGPT's code-block Copy button normally places raw code on the clipboard:
@@ -50,13 +52,12 @@ No brace scanning, candidate selection, field guessing, unknown-key stripping, o
 1. 只整理本轮我实际没懂、追问过或确实值得留下的内容，共 0-3 条，目标 1-2 条；没有就输出空 items。
 2. 回复只能包含一个 json 代码块，围栏外不得有任何文字。
 3. schema 必须是 tenjin.coach-transfer/v1。
-4. 每条只能有 type、focus、sourceExcerpt、answer，以及可选的 transferSentence。
+4. 每条只能有 type、focus、sourceExcerpt、answer。
 5. type 固定为 lookup。
 6. focus 是可独立复习的最小完整语言单位，保留决定意义的助词、活用和句法槽位；能自然规范化才规范化。
 7. sourceExcerpt 必须是包含 focus 的原始日文句子。
 8. answer 只解释 focus 在该句中的实际含义，最多一两句，不得编造。
-9. transferSentence 默认省略；只有本轮已经得到可靠的迁移例句时才提供。
-10. 不得增加任何其他字段，必须使用合法 JSON、双引号且无尾逗号。
+9. 不得增加任何其他字段，必须使用合法 JSON、双引号且无尾逗号。
 ```
 
 ## File map
@@ -549,7 +550,7 @@ Show four steps only: `发给 Coach` -> `说「整理」` -> `复制代码` -> `
 
 - [ ] **Step 4: Implement preview and optional image**
 
-Each selected card exposes `focus`, `sourceExcerpt`, `answer`, and optional `transferSentence`. Reuse `prepareCaptureImage` for one chosen card only. `transferSentence` stays preview-only in this release and is not persisted or used as proof of mastery.
+Each selected card exposes `focus`, `sourceExcerpt`, and `answer`. Reuse `prepareCaptureImage` for one chosen card only. Do not accept preview-only fields that are silently dropped on confirmation.
 
 - [ ] **Step 5: Add the entry point last**
 

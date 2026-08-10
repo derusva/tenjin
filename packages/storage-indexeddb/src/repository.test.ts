@@ -232,6 +232,27 @@ async function allStoreCounts(name: string): Promise<readonly number[]> {
   }
 }
 
+async function readClockStore(
+  name: string,
+): Promise<{
+  readonly keys: readonly IDBValidKey[];
+  readonly values: readonly unknown[];
+}> {
+  const database = await openDB(name);
+  try {
+    const transaction = database.transaction("clock", "readonly");
+    const store = transaction.objectStore("clock");
+    const [keys, values] = await Promise.all([
+      store.getAllKeys(),
+      store.getAll(),
+    ]);
+    await transaction.done;
+    return { keys, values };
+  } finally {
+    database.close();
+  }
+}
+
 async function seedRestoreProbeStore(
   name: string,
   store: "events" | "contexts" | "clock" | "importReceipts",
@@ -1678,6 +1699,124 @@ describe("Coach import repository capabilities", () => {
     expect(backup.events).toHaveLength(4);
     expect(backup.contexts).toEqual([]);
     expect(backup.importReceipts).toEqual([receipt]);
+  });
+
+  it("atomically removes the matching receipt so the same digest can be imported again", async () => {
+    const repository = await openTestRepository("coach-batch-undo-reimport");
+    const first = await importedCaptureWrite(
+      "reimport",
+      1,
+      "capture-reimport-first",
+    );
+    const digest = "79".repeat(32);
+    const receipt = receiptFor([first], digest);
+    await repository.appendImportedCaptureBatch([first], receipt);
+
+    await repository.appendDiscardBatch(
+      [discardWrite("capture-reimport-first", first.context.hash, 10)],
+      receipt.digest,
+    );
+
+    await expect(repository.hasImportReceipt(receipt.digest)).resolves.toBe(
+      false,
+    );
+    const afterUndo = await repository.readBackupSnapshot();
+    expect(afterUndo.importReceipts).toEqual([]);
+    expect(afterUndo.contexts).toEqual([]);
+
+    const firstEvent = first.events[0]! as CaptureCreatedEvent;
+    const second = {
+      events: [
+        {
+          ...firstEvent,
+          eventId: "event-import-reimport-second",
+          seq: 20,
+          hlc: { wallTime: firstEvent.hlc.wallTime + 20, counter: 0 },
+          captureId: "capture-reimport-second",
+        },
+      ],
+      context: first.context,
+    } satisfies CaptureWrite;
+    const secondReceipt = receiptFor(
+      [second],
+      digest,
+      "2026-08-11T00:00:02.000Z",
+    );
+
+    await expect(
+      repository.appendImportedCaptureBatch([second], secondReceipt),
+    ).resolves.toBe("imported");
+    const afterReimport = await repository.readBackupSnapshot();
+    expect(afterReimport.importReceipts).toEqual([secondReceipt]);
+    expect(afterReimport.contexts).toEqual([first.context]);
+    expect(
+      afterReimport.events.some(
+        (event) =>
+          event.kind === "capture_created" &&
+          event.captureId === "capture-reimport-second",
+      ),
+    ).toBe(true);
+  });
+
+  it("rolls back every discard when receipt captureIds do not exactly match the targets", async () => {
+    const repository = await openTestRepository(
+      "coach-batch-undo-receipt-mismatch",
+    );
+    const writes = [
+      await importedCaptureWrite("receipt-mismatch-a", 1),
+      await importedCaptureWrite("receipt-mismatch-b", 2),
+    ];
+    const receipt = receiptFor(writes, "7a".repeat(32));
+    await repository.appendImportedCaptureBatch(writes, receipt);
+    const before = await repository.readBackupSnapshot();
+    const firstCapture = writes[0]!.events[0]! as CaptureCreatedEvent;
+
+    await expect(
+      repository.appendDiscardBatch(
+        [discardWrite(firstCapture.captureId, writes[0]!.context.hash, 10)],
+        receipt.digest,
+      ),
+    ).rejects.toThrow(/exactly match/i);
+    await expect(
+      structurallyEqual(await repository.readBackupSnapshot(), before),
+    ).resolves.toBe(true);
+  });
+
+  it("rolls back discard events and contexts when receipt deletion fails", async () => {
+    const dbName = createDatabaseName("coach-batch-undo-delete-rollback");
+    const repository = await openLedgerRepository({ dbName });
+    openRepositories.add(repository);
+    const write = await importedCaptureWrite("receipt-delete-rollback", 1);
+    const receipt = receiptFor([write], "7b".repeat(32));
+    await repository.appendImportedCaptureBatch([write], receipt);
+    const capture = write.events[0]! as CaptureCreatedEvent;
+    const before = await repository.readBackupSnapshot();
+    const clockBefore = await readClockStore(dbName);
+    const nativeDelete = IDBObjectStore.prototype.delete;
+    IDBObjectStore.prototype.delete = function (
+      this: IDBObjectStore,
+      query: IDBValidKey | IDBKeyRange,
+    ): IDBRequest<undefined> {
+      if (this.name === "importReceipts" && query === receipt.digest) {
+        throw new Error("injected receipt delete failure");
+      }
+      return Reflect.apply(nativeDelete, this, [query]) as IDBRequest<undefined>;
+    };
+
+    try {
+      await expect(
+        repository.appendDiscardBatch(
+          [discardWrite(capture.captureId, write.context.hash, 10)],
+          receipt.digest,
+        ),
+      ).rejects.toThrow("injected receipt delete failure");
+    } finally {
+      IDBObjectStore.prototype.delete = nativeDelete;
+    }
+    await expect(
+      structurallyEqual(await repository.readBackupSnapshot(), before),
+    ).resolves.toBe(true);
+    expect(await readClockStore(dbName)).toEqual(clockBefore);
   });
 
   it("rejects a discard whose capture and context do not belong together", async () => {

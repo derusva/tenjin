@@ -66,7 +66,6 @@ describe("parseCoachTransfer", () => {
             focus: "  手を打つ  ",
             sourceExcerpt: "\n大丈夫、手は打ったから。\t",
             answer: "  采取措施；\n这里表示已经采取了对策。  ",
-            transferSentence: "  早めに手を打つ。  ",
           },
         ],
       }),
@@ -76,7 +75,6 @@ describe("parseCoachTransfer", () => {
       {
         ...ITEM,
         answer: "采取措施；\n这里表示已经采取了对策。",
-        transferSentence: "早めに手を打つ。",
       },
     ]);
   });
@@ -169,7 +167,11 @@ describe("parseCoachTransfer", () => {
     ["non-string field", { ...ITEM, answer: 42 }, "INVALID_ITEM_FIELD_TYPE"],
     ["ASCII whitespace field", { ...ITEM, focus: " \n\t " }, "EMPTY_ITEM_FIELD"],
     ["full-width whitespace field", { ...ITEM, focus: "　" }, "EMPTY_ITEM_FIELD"],
-    ["blank optional field", { ...ITEM, transferSentence: "  " }, "EMPTY_ITEM_FIELD"],
+    [
+      "unused transfer field",
+      { ...ITEM, transferSentence: "早めに手を打つ。" },
+      "UNKNOWN_ITEM_KEY",
+    ],
   ] as const)("rejects %s", (_name, item, code) => {
     errorFor(rawJson({ items: [item] }), code);
   });

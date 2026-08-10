@@ -110,7 +110,10 @@ export interface CoachImportRepository {
     writes: readonly CaptureWrite[],
     receipt: CoachImportReceipt,
   ): Promise<"imported" | "already-imported">;
-  appendDiscardBatch(writes: readonly DiscardWrite[]): Promise<void>;
+  appendDiscardBatch(
+    writes: readonly DiscardWrite[],
+    importReceiptDigest?: string,
+  ): Promise<void>;
 }
 
 /** Backup reads include fold-external state without widening LedgerRepository. */
@@ -1262,17 +1265,53 @@ class IndexedDBLedgerRepository
     await this.appendDiscardBatch([{ event, contextHash }]);
   }
 
-  async appendDiscardBatch(writes: readonly DiscardWrite[]): Promise<void> {
+  async appendDiscardBatch(
+    writes: readonly DiscardWrite[],
+    importReceiptDigest?: string,
+  ): Promise<void> {
     const prepared = prepareDiscardBatch(writes);
-    if (prepared.length === 0) return;
+    if (importReceiptDigest !== undefined) {
+      assertCoachImportDigest(importReceiptDigest);
+    }
+    if (prepared.length === 0) {
+      if (importReceiptDigest !== undefined) {
+        throw new Error(
+          "Coach import receipt captureIds must exactly match the discarded captures",
+        );
+      }
+      return;
+    }
 
     const transaction = this.#database.transaction(
-      ["events", "contexts", "clock"],
+      ["events", "contexts", "clock", "importReceipts"],
       "readwrite",
     );
 
     try {
       const eventStore = transaction.objectStore("events");
+      const receiptStore = transaction.objectStore("importReceipts");
+      if (importReceiptDigest !== undefined) {
+        const receipt = await receiptStore.get(importReceiptDigest);
+        if (receipt === undefined) {
+          throw new Error(
+            `Coach import receipt ${importReceiptDigest} does not exist`,
+          );
+        }
+        assertCoachImportReceipt(receipt);
+        const targetCaptureIds = prepared.map(({ event }) => event.captureId);
+        const targetCaptureIdSet = new Set(targetCaptureIds);
+        if (
+          targetCaptureIdSet.size !== targetCaptureIds.length ||
+          receipt.captureIds.length !== targetCaptureIds.length ||
+          receipt.captureIds.some(
+            (captureId) => !targetCaptureIdSet.has(captureId),
+          )
+        ) {
+          throw new Error(
+            "Coach import receipt captureIds must exactly match the discarded captures",
+          );
+        }
+      }
       for (const write of prepared) {
         const existing = await eventStore.get(write.event.eventId);
         if (existing === undefined) {
@@ -1337,6 +1376,9 @@ class IndexedDBLedgerRepository
         transaction.objectStore("clock"),
         prepared.map((write) => write.event),
       );
+      if (importReceiptDigest !== undefined) {
+        await receiptStore.delete(importReceiptDigest);
+      }
       await transaction.done;
     } catch (error) {
       try {

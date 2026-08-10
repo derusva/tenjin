@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { installRepositoryLifecycle } from "./repositoryLifecycle.js";
+import {
+  closeRepositoryLifecycle,
+  installRepositoryLifecycle,
+} from "./repositoryLifecycle.js";
 
 function pagehide(persisted: boolean): Event {
   const event = new Event("pagehide");
@@ -38,5 +41,60 @@ describe("installRepositoryLifecycle", () => {
     target.dispatchEvent(pagehide(false));
 
     expect(close).not.toHaveBeenCalled();
+  });
+
+  it("gates writes, closes the repository, then releases the shared lock", async () => {
+    const calls: string[] = [];
+
+    await closeRepositoryLifecycle({
+      enterReadOnly: () => {
+        calls.push("read-only");
+      },
+      close: () => {
+        calls.push("close");
+      },
+      releaseSharedLock: () => {
+        calls.push("release");
+      },
+    });
+
+    expect(calls).toEqual(["read-only", "close", "release"]);
+  });
+
+  it("still releases the shared lock when repository close fails", async () => {
+    const release = vi.fn();
+
+    await expect(
+      closeRepositoryLifecycle({
+        enterReadOnly: vi.fn(),
+        close: () => {
+          throw new Error("close failed");
+        },
+        releaseSharedLock: release,
+      }),
+    ).rejects.toThrow("close failed");
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("applies the same ordered shutdown on non-bfcache pagehide", async () => {
+    const target = new EventTarget();
+    const calls: string[] = [];
+    installRepositoryLifecycle(target, {
+      enterReadOnly: () => {
+        calls.push("read-only");
+      },
+      close: () => {
+        calls.push("close");
+      },
+      releaseSharedLock: () => {
+        calls.push("release");
+      },
+    });
+
+    target.dispatchEvent(pagehide(false));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toEqual(["read-only", "close", "release"]);
   });
 });

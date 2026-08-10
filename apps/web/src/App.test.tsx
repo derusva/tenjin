@@ -12,7 +12,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import { App } from "./App.js";
+import { App as TenjinApp, type AppProps } from "./App.js";
 import { IMAGE_ONLY_CAPTURE_ORIGINAL } from "./features/capture/createCapture.js";
 import {
   createLedgerRuntime,
@@ -20,6 +20,15 @@ import {
 } from "./features/ledger/ledgerRuntime.js";
 
 let databaseSequence = 0;
+const WRITABLE_GATE = { assertWritable: () => undefined };
+
+type TestAppProps = Omit<AppProps, "writeGate"> & {
+  readonly writeGate?: AppProps["writeGate"];
+};
+
+function App({ writeGate = WRITABLE_GATE, ...props }: TestAppProps) {
+  return <TenjinApp {...props} writeGate={writeGate} />;
+}
 
 function createDeferred<T>() {
   let resolve!: (value: T) => void;
@@ -29,8 +38,12 @@ function createDeferred<T>() {
   return { promise, resolve };
 }
 
-function hexadecimalDigest(text: string): string {
-  return [...new TextEncoder().encode(text)]
+async function hexadecimalDigest(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text),
+  );
+  return [...new Uint8Array(digest)]
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
@@ -60,7 +73,7 @@ async function createHarness(): Promise<{
       repository.reserveEventCoordinates(deviceId, physicalTime, count),
     now: () => new Date(now),
     randomUUID: () => `uuid-${++uuid}`,
-    digest: async (text) => hexadecimalDigest(text),
+    digest: hexadecimalDigest,
   });
 
   return {
@@ -106,6 +119,285 @@ async function saveLookupWithFakeTimers(
 }
 
 describe("App", () => {
+  it("opens the permanent Coach guide and returns to the record screen", async () => {
+    const harness = await createHarness();
+    const writeClipboardText = vi.fn(async () => undefined);
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        coachImportDependencies={{ writeClipboardText }}
+      />,
+    );
+
+    try {
+      expect(
+        await screen.findByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "怎么用 Coach" }));
+      expect(
+        screen.getByRole("heading", { name: "怎么用 Coach" }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("看完逐句翻译后，单独说「整理」")).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "复制 Coach 设置" }));
+      expect(writeClipboardText).toHaveBeenCalledTimes(1);
+
+      await user.click(screen.getByRole("button", { name: "返回" }));
+      expect(
+        screen.getByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("imports a Coach batch atomically and undoes the complete batch", async () => {
+    const harness = await createHarness();
+    const digest = `sha256:${"ab".repeat(32)}` as const;
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        coachImportDependencies={{
+          digestTransfer: vi.fn(async () => digest),
+        }}
+      />,
+    );
+
+    try {
+      expect(
+        await screen.findByRole("heading", { name: "Tenjin" }),
+      ).toBeInTheDocument();
+      await user.click(screen.getByRole("button", { name: "从 Coach 导入" }));
+
+      const json = JSON.stringify({
+        schema: "tenjin.coach-transfer/v1",
+        items: [
+          {
+            type: "lookup",
+            focus: "手を打つ",
+            sourceExcerpt: "大丈夫、手は打ったから。",
+            answer: "逐句翻译后，这里表示已经采取了措施。",
+          },
+          {
+            type: "lookup",
+            focus: "パッとしない",
+            sourceExcerpt: "パッとしない生徒がいましてねぇ。",
+            answer: "逐句翻译后，这里表示不起眼、平平无奇。",
+          },
+        ],
+      });
+      fireEvent.change(
+        screen.getByRole("textbox", {
+          name: /Coach JSON；自动读取失败时/,
+        }),
+        { target: { value: json } },
+      );
+      await user.click(screen.getByRole("button", { name: "预览输入内容" }));
+      expect(
+        await screen.findByRole("heading", { name: "2. 核对条目" }),
+      ).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "确认导入 2 条" }));
+      expect(await screen.findAllByText("已导入 2 条")).toHaveLength(2);
+
+      const importedSnapshot = await harness.repository.readSnapshot();
+      expect(
+        importedSnapshot.events.filter(
+          (event) => event.kind === "capture_created",
+        ),
+      ).toHaveLength(2);
+      expect(importedSnapshot.contexts.map((context) => context.focus)).toEqual([
+        "手を打つ",
+        "パッとしない",
+      ]);
+
+      await user.click(screen.getByRole("button", { name: "撤销" }));
+      await waitFor(async () => {
+        const snapshot = await harness.repository.readSnapshot();
+        expect(snapshot.contexts).toHaveLength(0);
+        expect(
+          snapshot.events.filter(
+            (event) => event.kind === "capture_discarded",
+          ),
+        ).toHaveLength(2);
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByText("已导入 2 条")).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: "现在复习" }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.getByRole("button", { name: "确认导入 2 条" }),
+        ).toBeEnabled();
+      });
+
+      await user.click(
+        screen.getByRole("button", { name: "确认导入 2 条" }),
+      );
+      expect(await screen.findAllByText("已导入 2 条")).toHaveLength(2);
+
+      const reimportedSnapshot = await harness.repository.readSnapshot();
+      expect(
+        reimportedSnapshot.events.filter(
+          (event) => event.kind === "capture_created",
+        ),
+      ).toHaveLength(4);
+      expect(reimportedSnapshot.contexts).toHaveLength(2);
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("keeps a Coach preview across navigation and resets the next view to the top", async () => {
+    const harness = await createHarness();
+    const digest = `sha256:${"bd".repeat(32)}` as const;
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        coachImportDependencies={{
+          digestTransfer: vi.fn(async () => digest),
+        }}
+      />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "Tenjin" });
+      await user.click(screen.getByRole("button", { name: "从 Coach 导入" }));
+      fireEvent.change(
+        screen.getByRole("textbox", {
+          name: /Coach JSON；自动读取失败时/,
+        }),
+        {
+          target: {
+            value: JSON.stringify({
+              schema: "tenjin.coach-transfer/v1",
+              items: [
+                {
+                  type: "lookup",
+                  focus: "手を打つ",
+                  sourceExcerpt: "大丈夫、手は打ったから。",
+                  answer: "采取措施。",
+                },
+              ],
+            }),
+          },
+        },
+      );
+      await user.click(screen.getByRole("button", { name: "预览输入内容" }));
+      const answer = await screen.findByRole("textbox", {
+        name: "第 1 条解释",
+      });
+      await user.clear(answer);
+      await user.type(answer, "已经采取措施。");
+
+      document.documentElement.scrollTop = 455;
+      document.body.scrollTop = 455;
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+      await waitFor(() => {
+        expect(document.documentElement.scrollTop).toBe(0);
+        expect(document.body.scrollTop).toBe(0);
+        expect(screen.getByRole("main")).toHaveFocus();
+      });
+
+      await user.click(within(navigation).getByRole("button", { name: "记录" }));
+      await user.click(screen.getByRole("button", { name: "从 Coach 导入" }));
+      expect(
+        screen.getByRole("heading", { name: "2. 核对条目" }),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("textbox", { name: "第 1 条解释" }),
+      ).toHaveValue("已经采取措施。");
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("reviews a newly imported Coach batch before the backlog and clears undo", async () => {
+    const harness = await createHarness();
+    const digest = `sha256:${"bc".repeat(32)}` as const;
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        coachImportDependencies={{
+          digestTransfer: vi.fn(async () => digest),
+        }}
+      />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "Tenjin" });
+      await user.type(
+        screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        "古い復習待ちの文",
+      );
+      await user.type(
+        screen.getByRole("textbox", { name: "查到的意思 / 解释（可选）" }),
+        "旧条目的解释",
+      );
+      await user.click(screen.getByRole("button", { name: "记下来" }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole("textbox", { name: "遇到的词或表达" }),
+        ).toHaveValue(""),
+      );
+
+      await user.click(screen.getByRole("button", { name: "从 Coach 导入" }));
+      const json = JSON.stringify({
+        schema: "tenjin.coach-transfer/v1",
+        items: [
+          {
+            type: "lookup",
+            focus: "手を打つ",
+            sourceExcerpt: "新しい対象は、手を打つです。",
+            answer: "这里的学习点是采取措施。",
+          },
+        ],
+      });
+      fireEvent.change(
+        screen.getByRole("textbox", {
+          name: /Coach JSON；自动读取失败时/,
+        }),
+        { target: { value: json } },
+      );
+      await user.click(screen.getByRole("button", { name: "预览输入内容" }));
+      await user.click(screen.getByRole("button", { name: "确认导入 1 条" }));
+      expect(await screen.findAllByText("已导入 1 条")).toHaveLength(2);
+      expect(screen.getByRole("button", { name: "撤销" })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "现在复习" }));
+
+      expect(
+        screen.getByRole("heading", {
+          name: "新しい対象は、手を打つです。",
+        }),
+      ).toBeInTheDocument();
+      expect(screen.getByText("学习点：手を打つ")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "撤销" }),
+      ).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
   it("offers a retry when the initial local snapshot read fails", async () => {
     const harness = await createHarness();
     let readAttempt = 0;
@@ -618,6 +910,203 @@ describe("App", () => {
     }
   });
 
+  it("exports a full backup and forwards a selected .tenjin file only from the data view", async () => {
+    const harness = await createHarness();
+    const onExportBackup = vi.fn(async () => undefined);
+    const onRestoreBackup = vi.fn<(file: File) => Promise<void>>(async () =>
+      undefined,
+    );
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        backupRestoreActions={{
+          restoreSupported: true,
+          restoreEligible: true,
+          onExportBackup,
+          onRestoreBackup,
+        }}
+      />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "Tenjin" });
+      expect(screen.queryByRole("heading", { name: "备份与恢复" })).not.toBeInTheDocument();
+
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+      expect(screen.getByRole("heading", { name: "备份与恢复" })).toBeInTheDocument();
+      expect(
+        screen.getByText(/全部原文、图片原始字节和 Coach 导入台账/),
+      ).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "导出完整备份" }));
+      expect(onExportBackup).toHaveBeenCalledOnce();
+      expect(await screen.findByRole("status")).toHaveTextContent("完整备份已下载");
+
+      const backup = new File([new Uint8Array([1, 2, 3])], "ledger.tenjin", {
+        type: "application/octet-stream",
+      });
+      await user.upload(
+        screen.getByLabelText("选择 Tenjin 备份文件"),
+        backup,
+      );
+      await waitFor(() => expect(onRestoreBackup).toHaveBeenCalledWith(backup));
+      expect(await screen.findByRole("status")).toHaveTextContent(
+        "恢复完成，正在重新打开…",
+      );
+      expect(screen.getByLabelText("选择 Tenjin 备份文件")).toBeDisabled();
+      expect(
+        within(navigation).getByRole("button", { name: "记录" }),
+      ).toBeDisabled();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("recovers the data view controls when backup restore is rejected", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        backupRestoreActions={{
+          restoreSupported: true,
+          restoreEligible: true,
+          onExportBackup: vi.fn(async () => undefined),
+          onRestoreBackup: vi.fn(async () => {
+            throw new Error("备份损坏");
+          }),
+        }}
+      />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "Tenjin" });
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+      const input = screen.getByLabelText("选择 Tenjin 备份文件");
+      await user.upload(input, new File(["bad"], "broken.tenjin"));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "恢复失败：备份损坏",
+      );
+      expect(input).toBeEnabled();
+      expect(
+        within(navigation).getByRole("button", { name: "记录" }),
+      ).toBeEnabled();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("keeps export available but disables restore when browser recovery locking is unavailable", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        backupRestoreActions={{
+          restoreSupported: false,
+          restoreEligible: true,
+          onExportBackup: vi.fn(async () => undefined),
+          onRestoreBackup: vi.fn(async () => undefined),
+        }}
+      />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "Tenjin" });
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+      expect(screen.getByRole("button", { name: "导出完整备份" })).toBeEnabled();
+      expect(screen.getByLabelText("选择 Tenjin 备份文件")).toBeDisabled();
+      expect(screen.getByText(/此浏览器缺少恢复所需的多标签写锁/)).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("keeps restore disabled when the ledger is non-empty", async () => {
+    const harness = await createHarness();
+    const transaction = await harness.runtime.createCapture({
+      type: "lookup",
+      original: "已有记录",
+      answer: "existing",
+    });
+    await harness.repository.appendCapture(
+      transaction.events,
+      transaction.context,
+    );
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        backupRestoreActions={{
+          restoreSupported: true,
+          restoreEligible: true,
+          onExportBackup: vi.fn(async () => undefined),
+          onRestoreBackup: vi.fn(async () => undefined),
+        }}
+      />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "Tenjin" });
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+      expect(screen.getByLabelText("选择 Tenjin 备份文件")).toBeDisabled();
+      expect(screen.getByText(/当前本地账本并非完全空白/)).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
+  it("uses the authoritative four-store eligibility when the folded snapshot is empty", async () => {
+    const harness = await createHarness();
+    const user = userEvent.setup();
+    const view = render(
+      <App
+        repository={harness.repository}
+        runtime={harness.runtime}
+        backupRestoreActions={{
+          restoreSupported: true,
+          restoreEligible: false,
+          onExportBackup: vi.fn(async () => undefined),
+          onRestoreBackup: vi.fn(async () => undefined),
+        }}
+      />,
+    );
+
+    try {
+      await screen.findByRole("heading", { name: "Tenjin" });
+      const navigation = screen.getByRole("navigation", { name: "主要导航" });
+      await user.click(within(navigation).getByRole("button", { name: "数据" }));
+      expect(screen.getByText("本地事件 0")).toBeInTheDocument();
+      expect(screen.getByText("本地上下文 0")).toBeInTheDocument();
+      expect(screen.getByLabelText("选择 Tenjin 备份文件")).toBeDisabled();
+      expect(
+        screen.getByText(/当前本地账本并非完全空白/),
+      ).toBeInTheDocument();
+    } finally {
+      view.unmount();
+      harness.repository.close();
+      await deleteDatabase(harness.databaseName);
+    }
+  });
+
   it("keeps the bottom navigation unchanged and does not expose developer diagnostics", async () => {
     const harness = await createHarness();
     const user = userEvent.setup();
@@ -810,33 +1299,40 @@ describe("App", () => {
       await user.type(search, " 話します ");
       expect(screen.getByRole("heading", { name: "話します" })).toBeInTheDocument();
       expect(screen.getByText("P unstable")).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "撤销" }),
+      ).not.toBeInTheDocument();
 
+      await user.click(within(navigation).getByRole("button", { name: "记录" }));
+      await saveLookup(user, "只用于撤销的临时记录");
       fireEvent.click(screen.getByRole("button", { name: "撤销" }));
       await waitFor(() =>
         expect(
-          screen.queryByRole("button", { name: "撤销" }),
+          screen.queryByRole("heading", { name: "只用于撤销的临时记录" }),
         ).not.toBeInTheDocument(),
       );
-      expect(await screen.findByText("没有找到相关记录")).toBeInTheDocument();
 
       snapshot = await harness.repository.readSnapshot();
-      expect(snapshot.contexts).toEqual([]);
+      expect(snapshot.contexts).toEqual([
+        expect.objectContaining({ original: "話すです", corrected: "話します" }),
+      ]);
       expect(snapshot.events.map((event) => event.kind)).toEqual([
         "capture_created",
         "item_created",
         "production_correction_observed",
         "verification_observed",
+        "capture_created",
         "capture_discarded",
       ]);
 
       await user.click(within(navigation).getByRole("button", { name: "数据" }));
-      expect(screen.getByText("本地事件 5")).toBeInTheDocument();
-      expect(screen.getByText("本地上下文 0")).toBeInTheDocument();
+      expect(screen.getByText("本地事件 6")).toBeInTheDocument();
+      expect(screen.getByText("本地上下文 1")).toBeInTheDocument();
       expect(screen.getByText("仅保存在此设备")).toBeInTheDocument();
       expect(screen.queryByText(/due|欠账|连续学习|排行榜|KPI/i)).not.toBeInTheDocument();
 
       await user.click(within(navigation).getByRole("button", { name: "记录" }));
-      expect(screen.getByText("还没有记录")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "話します" })).toBeInTheDocument();
 
       view.unmount();
       await expect(harness.repository.readSnapshot()).resolves.toMatchObject({

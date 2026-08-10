@@ -446,6 +446,57 @@ svg {
   color: var(--vermilion);
 }
 
+.coach-entry {
+  display: grid;
+  gap: 16px;
+  margin-top: 0;
+  border: 1px solid var(--forest);
+  border-left-width: 5px;
+  border-radius: var(--primary-radius);
+  padding: 17px 18px;
+  background: rgb(18 63 49 / 5%);
+}
+
+.coach-entry h2,
+.coach-entry p {
+  margin: 0;
+}
+
+.coach-entry h2 {
+  color: var(--forest);
+  font-size: 1rem;
+}
+
+.coach-entry p {
+  margin-top: 4px;
+  color: var(--muted-ink);
+  font-size: 0.82rem;
+}
+
+.coach-entry-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.coach-entry-actions button {
+  flex: 1 1 150px;
+  border: 1px solid var(--forest);
+  padding-inline: 14px;
+  background: var(--forest);
+  color: var(--paper);
+  font-weight: 800;
+}
+
+.coach-entry-actions button + button {
+  background: transparent;
+  color: var(--forest);
+}
+
+.coach-entry + .capture-composer {
+  margin-top: 18px;
+}
+
 .quick-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -742,6 +793,172 @@ svg {
   line-height: 1.15;
 }
 
+.coach-import-view > p,
+.coach-help-view > p {
+  margin: -22px 0 28px;
+  color: var(--muted-ink);
+}
+
+.coach-import-view > section,
+.coach-help-view > section {
+  margin-top: 28px;
+  border-top: 1px solid var(--soft-hairline);
+  padding-top: 22px;
+}
+
+.coach-import-view h2,
+.coach-help-view h2 {
+  margin: 0 0 16px;
+  color: var(--forest);
+  font-size: 1.05rem;
+}
+
+.coach-import-view h3 {
+  margin: 0 0 12px;
+  font-size: 0.92rem;
+}
+
+.coach-import-view label,
+.coach-help-view label {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+  color: var(--muted-ink);
+  font-size: 0.78rem;
+  font-weight: 750;
+}
+
+.coach-import-view textarea,
+.coach-import-view input:not([type="checkbox"]):not([type="radio"]):not([type="file"]),
+.coach-help-view textarea {
+  width: 100%;
+  border: 1px solid var(--hairline);
+  border-radius: var(--primary-radius);
+  padding: 11px 12px;
+  background: rgb(255 255 255 / 34%);
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.coach-import-view button:not(.back-action),
+.coach-help-view button:not(.back-action) {
+  min-height: var(--tap-target);
+  border: 1px solid var(--forest);
+  padding-inline: 15px;
+  background: transparent;
+  color: var(--forest);
+  font-weight: 800;
+}
+
+.coach-import-view section > button,
+.coach-help-view section > button,
+.coach-help-view > button:last-child {
+  margin-top: 12px;
+}
+
+.coach-import-view ol,
+.coach-help-view ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: coach-step;
+}
+
+.coach-help-view ol {
+  display: grid;
+  gap: 10px;
+}
+
+.coach-help-view ol li {
+  position: relative;
+  min-height: 42px;
+  padding: 9px 12px 9px 48px;
+  background: rgb(18 63 49 / 5%);
+  counter-increment: coach-step;
+}
+
+.coach-help-view ol li::before {
+  position: absolute;
+  top: 7px;
+  left: 9px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--forest);
+  color: var(--paper);
+  content: counter(coach-step);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.coach-import-view ol > li {
+  margin-top: 14px;
+}
+
+.coach-import-view article {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--primary-radius);
+  padding: 16px;
+  background: rgb(255 255 255 / 24%);
+}
+
+.coach-import-view article > label:first-child,
+.coach-import-view fieldset label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.coach-import-view input[type="checkbox"],
+.coach-import-view input[type="radio"] {
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  accent-color: var(--forest);
+}
+
+.coach-import-view fieldset {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  border: 1px solid var(--soft-hairline);
+  padding: 12px;
+}
+
+.coach-import-view fieldset label {
+  margin-top: 0;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.coach-import-view [role="alert"],
+.coach-help-view [role="alert"] {
+  border-left: 3px solid var(--vermilion);
+  padding: 9px 11px;
+  background: rgb(201 52 43 / 7%);
+}
+
+.coach-import-view [role="status"],
+.coach-help-view [role="status"] {
+  color: var(--forest);
+  font-weight: 700;
+}
+
+.coach-import-view img {
+  display: block;
+  width: min(100%, 420px);
+  max-height: 320px;
+  margin-top: 12px;
+  border: 1px solid var(--hairline);
+  object-fit: contain;
+}
+
 .utility-view.review-view {
   padding-top: 54px;
 }
@@ -867,6 +1084,88 @@ svg {
 .data-summary p:last-child {
   border-bottom: 0;
   color: var(--muted-ink);
+}
+
+.backup-restore-panel {
+  display: grid;
+  gap: 18px;
+  margin-top: 34px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--primary-radius);
+  padding: 20px;
+  background: rgb(255 255 255 / 28%);
+}
+
+.backup-restore-panel h2 {
+  margin: 0 0 6px;
+  color: var(--forest);
+  font-size: 1.08rem;
+}
+
+.backup-restore-panel p {
+  margin: 0;
+  color: var(--muted-ink);
+}
+
+.backup-restore-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.backup-restore-actions button,
+.backup-restore-actions .file-action {
+  position: relative;
+  display: inline-flex;
+  min-height: var(--tap-target);
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--forest);
+  border-radius: var(--primary-radius);
+  padding: 9px 12px;
+  background: transparent;
+  color: var(--forest);
+  font-weight: 800;
+  text-align: center;
+}
+
+.backup-restore-actions .file-action {
+  cursor: pointer;
+}
+
+.backup-restore-actions .file-action.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+
+.backup-restore-actions input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.backup-restore-actions .file-action:focus-within {
+  outline: var(--focus-width) solid var(--forest);
+  outline-offset: var(--focus-offset);
+}
+
+.backup-restore-panel .backup-note {
+  font-size: 0.8rem;
+}
+
+.backup-restore-panel .backup-message {
+  border-left: 3px solid var(--forest);
+  padding: 8px 10px;
+  background: rgb(18 63 49 / 5%);
+  color: var(--forest);
+  font-weight: 700;
+}
+
+.backup-restore-panel .backup-message.error {
+  border-left-color: var(--vermilion);
+  background: rgb(201 52 43 / 7%);
+  color: var(--vermilion);
 }
 
 .undo-toast {
@@ -1302,6 +1601,11 @@ svg {
 }
 
 @media (hover: hover) {
+  .backup-restore-actions button:hover:not(:disabled),
+  .backup-restore-actions .file-action:not(.is-disabled):hover,
+  .coach-entry-actions button:hover:not(:disabled),
+  .coach-import-view button:not(.back-action):hover:not(:disabled),
+  .coach-help-view button:not(.back-action):hover:not(:disabled),
   .capture-paste-action:hover:not(:disabled),
   .quick-actions button:hover,
   .secondary-action:hover,
@@ -1309,6 +1613,11 @@ svg {
   .reveal-action:hover {
     background: var(--forest);
     color: var(--paper);
+  }
+
+  .coach-entry-actions button:first-child:hover:not(:disabled) {
+    background: transparent;
+    color: var(--forest);
   }
 
   .assessment-actions button:hover:not(:disabled) {

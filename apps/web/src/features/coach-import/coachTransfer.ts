@@ -8,7 +8,6 @@ export interface CoachTransferItem {
   readonly focus: string;
   readonly sourceExcerpt: string;
   readonly answer: string;
-  readonly transferSentence?: string;
 }
 
 export interface CoachTransfer {
@@ -56,7 +55,6 @@ const ITEM_KEYS = new Set([
   "focus",
   "sourceExcerpt",
   "answer",
-  "transferSentence",
 ]);
 const REQUIRED_ITEM_KEYS = [
   "type",
@@ -69,8 +67,7 @@ const JSON_FENCE = /^```json[ \t]*\r?\n([\s\S]*?)\r?\n```$/u;
 type CoachTransferStringField =
   | "focus"
   | "sourceExcerpt"
-  | "answer"
-  | "transferSentence";
+  | "answer";
 
 const BROWSER_DIGEST_DEPENDENCIES: CoachTransferDigestDependencies = {
   sha256: (bytes) => crypto.subtle.digest("SHA-256", bytes),
@@ -163,16 +160,12 @@ function parseItem(value: unknown, itemIndex: number): CoachTransferItem {
     itemIndex,
   );
   const answer = normalizeRequiredString(value, "answer", itemIndex);
-  const transferSentence = hasOwn(value, "transferSentence")
-    ? normalizeRequiredString(value, "transferSentence", itemIndex)
-    : undefined;
 
   return {
     type: "lookup",
     focus,
     sourceExcerpt,
     answer,
-    ...(transferSentence === undefined ? {} : { transferSentence }),
   };
 }
 
@@ -254,9 +247,6 @@ export function canonicalizeCoachTransfer(transfer: CoachTransfer): string {
       focus: item.focus,
       sourceExcerpt: item.sourceExcerpt,
       answer: item.answer,
-      ...(item.transferSentence === undefined
-        ? {}
-        : { transferSentence: item.transferSentence }),
     })),
   });
 }

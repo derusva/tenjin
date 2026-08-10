@@ -49,6 +49,7 @@ export interface CoachImportViewProps {
   readonly onReview?: () => void;
   readonly onContinue?: () => void;
   readonly onOpenHelp?: () => void;
+  readonly resetCompletedImportVersion?: number;
   readonly readClipboardText?: () => Promise<string>;
   readonly writeClipboardText?: (text: string) => Promise<void>;
   readonly prepareImage?: (file: File) => Promise<ContextImageRecord>;
@@ -63,7 +64,6 @@ interface EditableItem {
   readonly focus: string;
   readonly sourceExcerpt: string;
   readonly answer: string;
-  readonly transferSentence: string;
 }
 
 interface PreviewState {
@@ -101,18 +101,15 @@ function editableItem(item: CoachTransferItem, sourceIndex: number): EditableIte
     focus: item.focus,
     sourceExcerpt: item.sourceExcerpt,
     answer: item.answer,
-    transferSentence: item.transferSentence ?? "",
   };
 }
 
 function confirmedItem(item: EditableItem): CoachTransferItem {
-  const transferSentence = item.transferSentence.trim();
   return {
     type: "lookup",
     focus: item.focus.trim(),
     sourceExcerpt: item.sourceExcerpt.trim(),
     answer: item.answer.trim(),
-    ...(transferSentence.length === 0 ? {} : { transferSentence }),
   };
 }
 
@@ -130,6 +127,7 @@ export function CoachImportView({
   onReview,
   onContinue,
   onOpenHelp,
+  resetCompletedImportVersion = 0,
   readClipboardText = readSystemClipboardText,
   writeClipboardText = writeSystemClipboardText,
   prepareImage = prepareCaptureImage,
@@ -147,6 +145,9 @@ export function CoachImportView({
   const [imageAction, setImageAction] = useState<ImageAction>("idle");
   const [imageError, setImageError] = useState<string | undefined>();
   const [saveAction, setSaveAction] = useState<SaveAction>("idle");
+  const [saveResultVersion, setSaveResultVersion] = useState(
+    resetCompletedImportVersion,
+  );
   const [saveError, setSaveError] = useState<string | undefined>();
   const [repairCopyAction, setRepairCopyAction] =
     useState<CopyAction>("idle");
@@ -169,12 +170,18 @@ export function CoachImportView({
 
   const selectedItems = preview?.items.filter((item) => item.selected) ?? [];
   const selectedItemsComplete = selectedItems.every(itemIsComplete);
+  const displayedSaveAction =
+    saveAction === "imported" &&
+    saveResultVersion !== resetCompletedImportVersion
+      ? "idle"
+      : saveAction;
   const busy =
     inputAction !== "idle" ||
     imageAction !== "idle" ||
-    saveAction === "saving";
+    displayedSaveAction === "saving";
   const completed =
-    saveAction === "imported" || saveAction === "already-imported";
+    displayedSaveAction === "imported" ||
+    displayedSaveAction === "already-imported";
   const canConfirm =
     selectedItems.length > 0 && selectedItemsComplete && !busy && !completed;
 
@@ -382,6 +389,7 @@ export function CoachImportView({
       const result = await onConfirm(confirmation);
       if (mounted.current) {
         setSaveAction(result.status);
+        setSaveResultVersion(resetCompletedImportVersion);
       }
     } catch (error) {
       if (mounted.current) {
@@ -567,22 +575,6 @@ export function CoachImportView({
                         }}
                       />
                     </label>
-                    <label>
-                      迁移句（可选）
-                      <textarea
-                        aria-label={`第 ${number} 条迁移句（可选）`}
-                        rows={2}
-                        value={item.transferSentence}
-                        disabled={!item.selected || busy || completed}
-                        onChange={(event) => {
-                          const value = event.currentTarget.value;
-                          updateItem(item.sourceIndex, (current) => ({
-                            ...current,
-                            transferSentence: value,
-                          }));
-                        }}
-                      />
-                    </label>
                   </article>
                 </li>
               );
@@ -663,7 +655,7 @@ export function CoachImportView({
               disabled={!canConfirm}
               onClick={() => void confirmImport()}
             >
-              {saveAction === "saving"
+              {displayedSaveAction === "saving"
                 ? "导入中…"
                 : `确认导入 ${selectedItems.length} 条`}
             </button>
@@ -673,12 +665,13 @@ export function CoachImportView({
             {completed ? (
               <>
                 <p role="status">
-                  {saveAction === "imported"
+                  {displayedSaveAction === "imported"
                     ? `已导入 ${selectedItems.length} 条`
                     : "这一批已经导入过，没有新增记录"}
                 </p>
                 <div aria-label="导入完成操作">
-                  {onReview === undefined ? null : (
+                  {onReview === undefined ||
+                  displayedSaveAction !== "imported" ? null : (
                     <button type="button" onClick={onReview}>
                       现在复习
                     </button>

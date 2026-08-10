@@ -86,6 +86,59 @@ function createHarness(options: {
 }
 
 describe("useLedger Coach batches", () => {
+  it("blocks every ledger write before runtime allocation after a tab yields", async () => {
+    const harness = createHarness();
+    const assertWritable = vi.fn(() => {
+      throw new Error("runtime yielded");
+    });
+    const { result } = renderHook(() =>
+      useLedger({
+        repository: harness.repository,
+        runtime: harness.runtime,
+        writeGate: { assertWritable },
+      }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await expect(
+      result.current.saveCapture({
+        type: "lookup",
+        original: "手を打つ",
+        answer: "采取措施",
+      }),
+    ).rejects.toThrow("runtime yielded");
+    await expect(
+      result.current.importCoachBatch({
+        digest: DIGEST,
+        items: [
+          {
+            sourceExcerpt: "手は打った",
+            focus: "手を打つ",
+            answer: "采取措施",
+          },
+        ],
+      }),
+    ).rejects.toThrow("runtime yielded");
+    await expect(
+      result.current.answerReview("item-1", "R", "pass"),
+    ).rejects.toThrow("runtime yielded");
+    await expect(
+      result.current.discardCapture("capture-1", "sha256:context"),
+    ).rejects.toThrow("runtime yielded");
+    await expect(
+      result.current.discardCaptureBatch([
+        { captureId: "capture-1", contextHash: "sha256:context" },
+      ]),
+    ).rejects.toThrow("runtime yielded");
+
+    expect(assertWritable).toHaveBeenCalledTimes(5);
+    expect(harness.reservationCalls).toEqual([]);
+    expect(harness.hasImportReceipt).not.toHaveBeenCalled();
+    expect(harness.appendImportedCaptureBatch).not.toHaveBeenCalled();
+    expect(harness.appendDiscardBatch).not.toHaveBeenCalled();
+    expect(harness.readSnapshot).toHaveBeenCalledTimes(1);
+  });
+
   it("builds one shared-timestamp batch and refreshes only after atomic import", async () => {
     const harness = createHarness();
     const { result } = renderHook(() =>
@@ -151,6 +204,9 @@ describe("useLedger Coach batches", () => {
       captures: receipt.captureIds.map((captureId, index) => ({
         captureId,
         contextHash: writes[index]!.context.hash,
+        itemId: writes[index]!.events.find(
+          (event) => event.kind === "item_created",
+        )!.itemId,
       })),
     });
     expect(harness.readSnapshot).toHaveBeenCalledTimes(2);
@@ -246,5 +302,33 @@ describe("useLedger Coach batches", () => {
       },
     ]);
     expect(harness.readSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes the Coach receipt digest only for an import batch undo", async () => {
+    const harness = createHarness();
+    const { result } = renderHook(() =>
+      useLedger({ repository: harness.repository, runtime: harness.runtime }),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    await act(async () => {
+      await result.current.discardCaptureBatch(
+        [{ captureId: "capture-coach", contextHash: "sha256:coach" }],
+        DIGEST,
+      );
+    });
+
+    expect(harness.appendDiscardBatch).toHaveBeenCalledWith(
+      [
+        {
+          event: expect.objectContaining({
+            kind: "capture_discarded",
+            captureId: "capture-coach",
+          }),
+          contextHash: "sha256:coach",
+        },
+      ],
+      DIGEST,
+    );
   });
 });
