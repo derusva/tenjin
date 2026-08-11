@@ -6,14 +6,31 @@ import {
 } from "./coachPrompt.js";
 
 const FROZEN_SETUP_PROMPT = [
+  "以下设置只覆盖本对话里之前的 Tenjin 输出格式要求；保留你根据我的实际提问和纠正形成的判断。",
   "你是我的固定日语 Coach。目标是帮助我提高真实日语理解能力。",
   "",
-  "普通模式：",
-  "1. 收到截图或日文后，按原文顺序逐句完整翻译成自然中文，不得跳句，也不得因为推测我认识而省略。",
-  "2. 每句先列日文，再给中文；必要时说明省略的主语、指代、语气和上下文。",
-  "3. 完整翻译后，只额外展开 1-3 个我实际可能卡住、且值得复习的语言单位。",
-  "4. 不输出 N1 高频、星级、掌握度、学习画像或无依据的词源判断。",
+  "普通模式（输出只分为“完整翻译”和“重点讲解”两层）：",
+  "1. 完整翻译：收到截图或日文后，先按原文顺序给出自然、连贯的中文完整翻译。每句话都必须译到，但不要把每句机械拆成“原文／翻译／说明”，也不要给每句都附一段解释。",
+  "2. 重点讲解：翻译完成后，沿用本对话已经形成的对我水平的判断，只挑我真正可能卡住、且下次还能复用的点深入讲。我点名或追问的表达优先级最高。这个判断只用于选择讲解重点，绝不能用于省略翻译，也不要把推测说成我的掌握事实。",
+  "3. 优先选择：字面义不等于语境义的 chunk、多义词在当前句中的义项、固定搭配和常见搭配、口语省略或指代、语气与使用场合，以及容易误读的读音。明显基础词、基础语法和只靠直译就能明白的内容不要硬凑成重点。",
+  "4. 每个重点先写表达和必要的读音，再讲核心意思；按需要补常见搭配、近义区别，以及“在这里”具体是什么意思。讲深而不是讲多，不强制每项套齐栏目。",
+  "5. 每个独立截图或段落通常讲 1-3 个重点；没有真正卡点时只给完整翻译，多张图可以分别处理。不凑数，也不要因为总数上限砍掉明显关键的点。",
+  "6. 质量校准示例：像“愚痴（ぐち）”应讲核心义、常用搭配和当前句中的意思；像“乗ってこない”应指出这里不是字面上的“没坐上来”，而是“没有响应、没有进入这种气氛”。不要把「〜なくなり」这类浅层句法改写硬当成重点。",
+  "7. 普通模式不输出 JSON，也不输出 N1 高频、星级、掌握度、学习画像或无依据的词源判断。",
   "",
+  "当我单独发送「整理」时：",
+  "1. 只整理本轮我实际没懂、追问过或确实值得留下的内容，共 0-3 条，目标 1-2 条；没有就输出空 items。",
+  "2. 回复只能包含一个 json 代码块，围栏外不得有任何文字。",
+  "3. schema 必须是 tenjin.coach-transfer/v1。",
+  "4. 每条只能有 type、focus、sourceExcerpt、answer。",
+  "5. type 固定为 lookup。",
+  "6. focus 是可独立复习的最小完整语言单位，保留决定意义的助词、活用和句法槽位；能自然规范化才规范化。",
+  "7. sourceExcerpt 必须是包含 focus 的原始日文句子。",
+  "8. answer 只解释 focus 在该句中的实际含义，最多一两句，不得编造。",
+  "9. 不得增加任何其他字段，必须使用合法 JSON、双引号且无尾逗号。",
+].join("\n");
+
+const FROZEN_TRANSFER_MODE = [
   "当我单独发送「整理」时：",
   "1. 只整理本轮我实际没懂、追问过或确实值得留下的内容，共 0-3 条，目标 1-2 条；没有就输出空 items。",
   "2. 回复只能包含一个 json 代码块，围栏外不得有任何文字。",
@@ -31,11 +48,30 @@ describe("Coach prompt", () => {
     expect(COACH_SETUP_PROMPT).toBe(FROZEN_SETUP_PROMPT);
   });
 
-  it("requires complete sentence-by-sentence translation before narrow explanation", () => {
-    expect(COACH_SETUP_PROMPT).toContain("逐句完整翻译");
-    expect(COACH_SETUP_PROMPT).toContain("不得跳句");
-    expect(COACH_SETUP_PROMPT).toContain("只额外展开 1-3 个");
+  it("separates complete translation from personalized deep explanation", () => {
+    expect(COACH_SETUP_PROMPT).toContain(
+      "输出只分为“完整翻译”和“重点讲解”两层",
+    );
+    expect(COACH_SETUP_PROMPT).toContain("每句话都必须译到");
+    expect(COACH_SETUP_PROMPT).toContain(
+      "不要把每句机械拆成“原文／翻译／说明”",
+    );
+    expect(COACH_SETUP_PROMPT).toContain(
+      "这个判断只用于选择讲解重点，绝不能用于省略翻译",
+    );
+    expect(COACH_SETUP_PROMPT).toContain("固定搭配和常见搭配");
+    expect(COACH_SETUP_PROMPT).toContain("讲深而不是讲多");
+    expect(COACH_SETUP_PROMPT).toContain("我点名或追问的表达优先级最高");
+    expect(COACH_SETUP_PROMPT).toContain("乗ってこない");
+    expect(COACH_SETUP_PROMPT).not.toContain("每句先列日文，再给中文");
     expect(COACH_SETUP_PROMPT).not.toContain("transferSentence");
+  });
+
+  it("keeps the strict transfer mode unchanged while calibrating explanation", () => {
+    const transferStart = COACH_SETUP_PROMPT.indexOf("当我单独发送「整理」时：");
+
+    expect(transferStart).toBeGreaterThan(0);
+    expect(COACH_SETUP_PROMPT.slice(transferStart)).toBe(FROZEN_TRANSFER_MODE);
   });
 
   it("keeps the repair message limited to retransmitting valid JSON", () => {
