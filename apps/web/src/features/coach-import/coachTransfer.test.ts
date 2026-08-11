@@ -154,6 +154,7 @@ describe("parseCoachTransfer", () => {
   it.each([
     ["non-object item", null, "INVALID_ITEM"],
     ["unknown item key", { ...ITEM, confidence: 0.9 }, "UNKNOWN_ITEM_KEY"],
+    ["separate reading field", { ...ITEM, reading: "てをうつ" }, "UNKNOWN_ITEM_KEY"],
     [
       "missing required item key",
       {
