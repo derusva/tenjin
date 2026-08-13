@@ -1,6 +1,11 @@
 import {
   buildLedgerRestorePlan,
+  canonicalizeCoachTransfer,
+  COACH_TRANSFER_SCHEMA,
+  CoachTransferError,
+  digestCoachTransfer,
   exportLedgerPackage,
+  parseCoachTransfer,
   readPackage,
   runZipRuntimeProbe,
   ZIP_ENTRY_OPTIONS,
@@ -8,6 +13,8 @@ import {
   ZIP_READER_OPTIONS,
   ZIP_WORKER_OPTIONS,
   type LedgerRestorePlan,
+  type CoachTransfer,
+  type CoachTransferErrorCode,
   type ExportContext,
   type ExportLedgerPackageInput,
   type LedgerPackageManifest,
@@ -16,6 +23,17 @@ import {
   type Sha256Hex,
   type ZipRuntimeProbeResult,
 } from "@tenjin/exchange";
+
+const coachTransfer: CoachTransfer = parseCoachTransfer(
+  JSON.stringify({ schema: COACH_TRANSFER_SCHEMA, items: [] }),
+);
+const coachCanonical: string = canonicalizeCoachTransfer(coachTransfer);
+const coachDigest: Promise<`sha256:${string}`> = digestCoachTransfer(
+  coachTransfer,
+  { sha256: async () => new ArrayBuffer(32) },
+);
+const coachErrorCode: CoachTransferErrorCode = "INVALID_JSON";
+const coachError = new CoachTransferError(coachErrorCode, "invalid");
 
 const receipt: PackageImportReceipt = {
   digest: `sha256:${"a".repeat(64)}`,
@@ -82,3 +100,6 @@ void restorePlanPromise;
 void restoredReceiptsPromise;
 void exportedBytes;
 void missingReceiptState;
+void coachCanonical;
+void coachDigest;
+void coachError;
