@@ -1,0 +1,57 @@
+{
+  "schema": "tenjin.reach-config/v1",
+  "sources": [
+    {
+      "id": "fixture.social",
+      "kind": "fixture",
+      "accountScope": "public-demo",
+      "path": "../fixtures/social-items.json",
+      "limit": 20
+    },
+    {
+      "id": "note.official",
+      "kind": "note-rss",
+      "accountScope": "public",
+      "feedUrl": "https://note.com/info/rss",
+      "fetchFullText": true,
+      "limit": 3
+    },
+    {
+      "id": "youtube.history",
+      "kind": "youtube-history",
+      "accountScope": "primary",
+      "transcriptLanguage": "ja",
+      "limit": 20,
+      "enabled": false
+    },
+    {
+      "id": "youtube.watch-later",
+      "kind": "youtube-watch-later",
+      "accountScope": "primary",
+      "transcriptLanguage": "ja",
+      "limit": 20,
+      "enabled": false
+    },
+    {
+      "id": "x.bookmarks",
+      "kind": "x-bookmarks",
+      "accountScope": "primary",
+      "limit": 20,
+      "enabled": false
+    },
+    {
+      "id": "x.likes",
+      "kind": "x-likes",
+      "accountScope": "primary",
+      "limit": 20,
+      "enabled": false
+    },
+    {
+      "id": "instagram.saved.probe",
+      "kind": "instagram-saved-probe",
+      "accountScope": "primary",
+      "limit": 5,
+      "enabled": false
+    }
+  ]
+}

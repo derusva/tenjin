@@ -464,7 +464,9 @@ async function rawEntryError(
         ...ZIP_ENTRY_OPTIONS,
         strictness,
         checkOverlappingEntry: overlap || ZIP_ENTRY_OPTIONS.checkOverlappingEntry,
-        signal: new AbortController().signal,
+        // The runtime value is a real platform AbortSignal. This module keeps
+        // only the minimal cancellation shape in its public test seam.
+        signal: new AbortController().signal as AbortSignal,
       });
     }
     return data === undefined ? { code: "OK" } : { code: "OK", data };

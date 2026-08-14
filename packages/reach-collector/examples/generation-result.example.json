@@ -1,0 +1,11 @@
+{
+  "schema": "tenjin.reach-generation-result/v1",
+  "items": [
+    {
+      "excerptId": "sha256:replace-with-id-from-teaching-request",
+      "type": "lookup",
+      "focus": "手を打つ",
+      "answer": "读音：てをうつ。这里表示已经采取了对策。"
+    }
+  ]
+}

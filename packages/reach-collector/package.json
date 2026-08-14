@@ -1,0 +1,36 @@
+{
+  "name": "@tenjin/reach-collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "tenjin-reach": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "pretest": "pnpm --filter @tenjin/exchange build",
+    "test": "vitest run",
+    "pretypecheck": "pnpm --filter @tenjin/exchange build",
+    "typecheck": "tsc --noEmit",
+    "prebuild": "pnpm --filter @tenjin/exchange build",
+    "build": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "@tenjin/exchange": "workspace:*",
+    "fast-xml-parser": "5.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

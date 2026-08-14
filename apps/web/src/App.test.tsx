@@ -1,6 +1,5 @@
 import "fake-indexeddb/auto";
 
-// @ts-expect-error Vitest runs in Node, while the production web tsconfig omits Node globals.
 import { Blob as NodeBlob } from "node:buffer";
 import {
   openLedgerRepository,
@@ -1349,7 +1348,9 @@ describe("App", () => {
     const harness = await createHarness();
     const user = userEvent.setup();
     const image = {
-      blob: new NodeBlob(["png"], { type: "image/png" }),
+      // Vitest's Node Blob has the runtime methods this IndexedDB integration
+      // test needs; the product contract intentionally remains the DOM Blob.
+      blob: new NodeBlob(["png"], { type: "image/png" }) as unknown as Blob,
       mediaType: "image/png",
       name: "lesson.png",
       byteLength: 3,

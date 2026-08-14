@@ -1,0 +1,20 @@
+[
+  {
+    "sourceId": "fixture.social",
+    "accountScope": "public-demo",
+    "platform": "fixture",
+    "externalId": "saved-post-001",
+    "canonicalUrl": "https://example.test/social/saved-post-001",
+    "interaction": "bookmark",
+    "content": {
+      "kind": "post",
+      "text": "大丈夫、手は打ったから。あとは結果を待つしかない。"
+    },
+    "backend": {
+      "name": "fixture",
+      "version": "1"
+    },
+    "publishedAt": "2026-08-10T03:00:00.000Z",
+    "author": "fixture-author"
+  }
+]
