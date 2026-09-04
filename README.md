@@ -1,8 +1,16 @@
 # Tenjin
 
-Tenjin 是一个离线优先的个人日语学习账本。它把“刚查过的词、没听出来的表达、被纠正的说法”快速记到本机，并用 R（识别）、L（听辨）、P（产出）三个通道组织复习证据。
+**状态（2026-09-04）：Repo 保留，产品停止。**
 
-当前版本包含：
+Tenjin was an experimental personal Japanese-learning ledger.
+
+The experiment validated chunk-oriented capture, context retention, A-vs-B contrast, and recognition/listening/production separation.
+
+Daily capture and review have since moved to a simpler ChatGPT + Notion workflow, so active product development is paused.
+
+仓库保留代码、设计文档和实验记录。以下为保留版本的使用与开发说明；`HANDOFF.md` 与 `docs/` 中的未完成计划仅作历史参考，不再作为当前开发任务。恢复产品开发需明确决定重启。
+
+保留的实验版本包含：
 
 - 文字粘贴 / 输入和应用内单张图片记录
 - 记录、最近记录与 8 秒撤销
